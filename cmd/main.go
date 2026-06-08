@@ -17,10 +17,10 @@ func main() {
 
 	// 1. Boot up the Database Connection (This runs ONCE at startup)
 	redisClient := database.NewRedisClient()
-
+	postgresClient:= database.NewPostgresClient()
 	// 2. Instantiate the NEW Redis-powered Engine
 	// Notice how we pass the live connection pointer into the service!
-	trustSvc := service.NewRedisTrustService(redisClient)
+	trustSvc := service.NewRedisTrustService(redisClient,postgresClient)
 
 	// 3. Put the Engine in the Car
 	// The handler doesn't care that we swapped Mock for Redis! The interface protects it.

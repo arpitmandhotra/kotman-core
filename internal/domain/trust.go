@@ -1,5 +1,8 @@
 package domain
-
+import (
+	"time"
+	"gorm.io/gorm"
+)
 // TrustRequest represents the payload we expect from Shopify.
 // WHY IT'S NECESSARY: Go is strictly typed. It needs a blueprint to map raw JSON text into memory.
 type TrustRequest struct {
@@ -24,3 +27,9 @@ type TrustResponse struct {
 		PhoneHash string `json:"phone_hash"`
 		Reason    string `json:"reason"`
 	}
+type BadActorRecord struct{
+	gorm.Model
+	PhoneHash string
+	Reason string
+	LockedAt  time.Time
+}
