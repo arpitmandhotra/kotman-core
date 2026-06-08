@@ -5,17 +5,20 @@ import (
 	"log"
 	"strconv"
 	"time"
-
+    "gorm.io/gorm"
 	"github.com/arpitmandhotra/api-integrator/internal/domain"
 	"github.com/redis/go-redis/v9"
 )
 
 type RedisTrustService struct {
 	db *redis.Client
+	pg    *gorm.DB
 }
 
-func NewRedisTrustService(client *redis.Client) *RedisTrustService {
-	return &RedisTrustService{db: client}
+func NewRedisTrustService(client *redis.Client,pgClient *gorm.DB) *RedisTrustService {
+	return &RedisTrustService{
+		db: client,
+	pg:  pgClient}
 }
 
 // EvaluateRisk now accepts the ipAddress to catch bots!
@@ -79,5 +82,16 @@ func (s *RedisTrustService) ReportBadActor(ctx context.Context, phoneHash string
 		return err
 	}
 	log.Printf("Succesfuly saved the bad actor %s to redis because : %s", phoneHash, reason)
+	record:= domain.BadActorRecord{
+		PhoneHash: phoneHash,
+		Reason: reason,
+		LockedAt:time.Now(),
+	}
+	if err := s.pg.Create(&record).Error; err != nil {
+		log.Printf("Failed to archive bad actor in Postgres: %v", err)
+		return err
+	}
+	log.Printf("--> [DISK] Scammer permanently archived in Cold Storage.")
+
 	return nil
 }
