@@ -10,11 +10,14 @@ import (
 	"github.com/arpitmandhotra/api-integrator/internal/database"
 	"github.com/arpitmandhotra/api-integrator/internal/handlers"
 	"github.com/arpitmandhotra/api-integrator/internal/service"
+    "github.com/arpitmandhotra/api-integrator/internal/middleware"    
 )
 
 func main() {
 	app := fiber.New()
-
+	//acts as a middleman not to ovewhelm api 
+    app.Use(middleware.RequestLogger())
+	app.Use(middleware.SecurityBouncer())
 	// 1. Boot up the Database Connection (This runs ONCE at startup)
 	redisClient := database.NewRedisClient()
 	postgresClient:= database.NewPostgresClient()

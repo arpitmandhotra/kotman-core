@@ -7,12 +7,14 @@ import (
 	"time"
     "gorm.io/gorm"
 	"github.com/arpitmandhotra/api-integrator/internal/domain"
+	"golang.org/x/sync/singleflight"
 	"github.com/redis/go-redis/v9"
 )
 
 type RedisTrustService struct {
 	db *redis.Client
 	pg    *gorm.DB
+	requestGroup singleflight.Group
 }
 
 func NewRedisTrustService(client *redis.Client,pgClient *gorm.DB) *RedisTrustService {
@@ -48,28 +50,56 @@ func (s *RedisTrustService) EvaluateRisk(ctx context.Context, phoneHash string, 
 	}
 
 	// ==========================================
-	// HEURISTIC 2: THE KNOWN SCAMMER CHECK (Hash)
+	// HEURISTIC 2: SINGLEFLIGHT POSTGRES VAULT
 	// ==========================================
-	val, err := s.db.Get(ctx, phoneHash).Result()
 
-	if err == redis.Nil {
+	// 1. THE FAST PATH (Check RAM)
+	val, err := s.db.Get(ctx, phoneHash).Result()
+	if err == nil { // Found in Redis!
+		log.Printf("--> [RAM HIT] Instant decision for %s", phoneHash)
+		parsedScore, _ := strconv.Atoi(val)
 		return domain.TrustResponse{
 			PhoneHash: phoneHash,
-			Score:     85,
-			Action:    "ALLOW_COD",
+			Score:     parsedScore,
+			Action:    "HIDE_COD", 
 		}, nil
 	}
 
-	if err != nil {
-		return domain.TrustResponse{}, err
+	// 2. CACHE MISS! Enter the Singleflight waiting room.
+	v, err, shared := s.requestGroup.Do(phoneHash, func() (interface{}, error) {
+		log.Printf("--> [CACHE MISS] Querying Postgres Cold Storage for %s", phoneHash)
+
+		var record domain.BadActorRecord
+		dbErr := s.pg.Where("phone_hash = ?", phoneHash).First(&record).Error
+
+		// If it's not in Postgres either, the user is completely clean!
+		if dbErr != nil {
+			return 85, nil // 85 = High Trust
+		}
+
+		// 3. CACHE WARMING!
+		// We found them in Cold Storage. Copy them back to RAM for 24 hours.
+		s.db.Set(ctx, phoneHash, "20", 24*time.Hour)
+
+		return 20, nil // 20 = Low Trust
+	})
+
+	// 4. OBSERVABILITY: Did Singleflight save us from a stampede?
+	if shared {
+		log.Printf("🛡️ [SINGLEFLIGHT] Protected Database! Broadcasted Postgres result.")
 	}
 
-	parsedScore, _ := strconv.Atoi(val)
+	// 5. Build the final response based on what Singleflight returned
+	finalScore := v.(int)
+	action := "ALLOW_COD"
+	if finalScore <= 20 {
+		action = "HIDE_COD"
+	}
 
 	return domain.TrustResponse{
 		PhoneHash: phoneHash,
-		Score:     parsedScore,
-		Action:    "HIDE_COD",
+		Score:     finalScore,
+		Action:    action,
 	}, nil
 
 }
