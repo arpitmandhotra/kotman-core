@@ -11,7 +11,7 @@ import (
 // NewPostgresClient creates and returns a connected Postgres database engine
 func NewPostgresClient() *gorm.DB {
 	// This DSN (Data Source Name) matches the exact credentials you gave Docker
-	dsn := "host=localhost user=kotman password=secret dbname=kotman_db port=5432 sslmode=disable TimeZone=Asia/Kolkata"
+	dsn := "host=host.docker.internal user=kotman password=secret dbname=kotman_db port=5432 sslmode=disable TimeZone=Asia/Kolkata"
 	
 	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
 	if err != nil {
