@@ -1,0 +1,32 @@
+version: '3.8'
+
+services:
+  # ==========================================
+  # KOTMAN CORE LOCAL POSTGRES VAULT
+  # ==========================================
+  postgres:
+    image: postgres:15-alpine
+    container_name: kotman_db
+    environment:
+      POSTGRES_USER: kotman
+      POSTGRES_PASSWORD: secret
+      POSTGRES_DB: kotman_db
+      TZ: Asia/Kolkata
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  # ==========================================
+  # LOCAL REDIS (For Rate Limiting Testing)
+  # ==========================================
+  redis:
+    image: redis:7-alpine
+    container_name: kotman_redis
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
