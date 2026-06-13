@@ -1,7 +1,7 @@
 package handlers
 
 import (
-	"log"
+	"log/slog"
 
 	"github.com/arpitmandhotra/api-integrator/internal/service"
 	"github.com/arpitmandhotra/api-integrator/internal/domain"
@@ -26,7 +26,10 @@ var payload domain.WebhookPayload
 
 	// 2. Parse the incoming Shopify JSON
 	if err := c.BodyParser(&payload); err != nil {
-		log.Println("Webhook Error: Invalid JSON received")
+		slog.Error("webhook invalid json", 
+	"error", err, 
+	"ip", c.IP(),
+)
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid webhook payload"})
 	}
 
@@ -37,7 +40,10 @@ var payload domain.WebhookPayload
 	err := h.trustService.ReportBadActor(ctx, payload.PhoneHash, payload.Reason)
 	if err != nil {
 		// Even if the database fails, we still return 200 OK so Shopify doesn't panic and retry.
-		log.Println("Database failure during webhook, but returning 200 OK to Shopify.")
+		slog.Error("webhook database failure", 
+	"error", err, 
+	"phone_hash", payload.PhoneHash[:8]+"...",
+)
 	}
 
 	// 4. Webhook Golden Rule: ALWAYS return a 200 OK fast.

@@ -2,7 +2,7 @@ package service
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"strconv"
 	"time"
     "gorm.io/gorm"
@@ -33,7 +33,7 @@ func (s *RedisTrustService) EvaluateRisk(ctx context.Context, phoneHash string, 
 
 	attempts, err := s.db.Incr(ctx, velocityKey).Result()
 	if err != nil {
-		log.Printf("Redis velocity error: %v", err)
+		slog.Error("redis velocity error", "error", err, "ip", ipAddress)
 	}
 
 	if attempts == 1 {
@@ -41,7 +41,10 @@ func (s *RedisTrustService) EvaluateRisk(ctx context.Context, phoneHash string, 
 	}
 
 	if attempts > 3 {
-		log.Printf("🚨 VELOCITY BOT DETECTED! IP: %s attempted %d times.", ipAddress, attempts)
+	slog.Warn("velocity bot detected",
+    "ip",       ipAddress,
+    "attempts", attempts,
+	)
 		return domain.TrustResponse{
 			PhoneHash: phoneHash,
 			Score:     10,
@@ -56,7 +59,11 @@ func (s *RedisTrustService) EvaluateRisk(ctx context.Context, phoneHash string, 
 	// 1. THE FAST PATH (Check RAM)
 	val, err := s.db.Get(ctx, phoneHash).Result()
 	if err == nil { // Found in Redis!
-		log.Printf("--> [RAM HIT] Instant decision for %s", phoneHash)
+	slog.Info("cache hit",
+	"phone_hash", phoneHash[:8]+"...",
+	"score",      val, // val is the raw string from Redis, perfectly safe to log here
+	"action",     "HIDE_COD",
+)
 		parsedScore, _ := strconv.Atoi(val)
 		return domain.TrustResponse{
 			PhoneHash: phoneHash,
@@ -67,7 +74,7 @@ func (s *RedisTrustService) EvaluateRisk(ctx context.Context, phoneHash string, 
 
 	// 2. CACHE MISS! Enter the Singleflight waiting room.
 	v, err, shared := s.requestGroup.Do(phoneHash, func() (interface{}, error) {
-		log.Printf("--> [CACHE MISS] Querying Postgres Cold Storage for %s", phoneHash)
+		slog.Info("cache miss querying postgres", "phone_hash", phoneHash[:8]+"...")
 
 		var record domain.BadActorRecord
 		dbErr := s.pg.Where("phone_hash = ?", phoneHash).First(&record).Error
@@ -86,7 +93,7 @@ func (s *RedisTrustService) EvaluateRisk(ctx context.Context, phoneHash string, 
 
 	// 4. OBSERVABILITY: Did Singleflight save us from a stampede?
 	if shared {
-		log.Printf("🛡️ [SINGLEFLIGHT] Protected Database! Broadcasted Postgres result.")
+		slog.Info("singleflight database protected", "phone_hash", phoneHash[:8]+"...")
 	}
 
 	// 5. Build the final response based on what Singleflight returned
@@ -108,20 +115,20 @@ func (s *RedisTrustService) ReportBadActor(ctx context.Context, phoneHash string
 	expirationTime := 24 * time.Hour * 180
 	err := s.db.Set(ctx, phoneHash, "20", expirationTime).Err()
 	if err != nil {
-		log.Printf("Failed to save the bad actor to redis: %v", err)
+		slog.Error("failed to save bad actor to redis", "error", err, "phone_hash", phoneHash[:8]+"...")
 		return err
 	}
-	log.Printf("Succesfuly saved the bad actor %s to redis because : %s", phoneHash, reason)
+	slog.Info("bad actor saved to redis", "phone_hash", phoneHash[:8]+"...", "reason", reason)
 	record:= domain.BadActorRecord{
 		PhoneHash: phoneHash,
 		Reason: reason,
 		LockedAt:time.Now(),
 	}
 	if err := s.pg.Create(&record).Error; err != nil {
-		log.Printf("Failed to archive bad actor in Postgres: %v", err)
+		
+slog.Error("failed to archive bad actor in postgres", "error", err, "phone_hash", phoneHash[:8]+"...")
 		return err
 	}
-	log.Printf("--> [DISK] Scammer permanently archived in Cold Storage.")
-
+	slog.Info("bad actor archived in postgres", "phone_hash", phoneHash[:8]+"...")
 	return nil
 }

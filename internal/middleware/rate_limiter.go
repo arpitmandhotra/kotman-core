@@ -2,7 +2,7 @@ package middleware
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
 	"time"
         "context"
 		"math/rand"
@@ -45,7 +45,10 @@ func RequireRateLimit(redisClient *redis.Client) fiber.Handler {
 
 		// 4. Execute the pipeline
 		if _, err := pipe.Exec(ctx); err != nil {
-			log.Printf("🚨 [REDIS] Pipeline failure or timeout: %v", err)
+		slog.Error("redis pipeline failure", 
+	"error", err, 
+	"ip", c.IP(),
+)
 			return c.Next() 
 		}
 
@@ -57,7 +60,13 @@ func RequireRateLimit(redisClient *redis.Client) fiber.Handler {
 		// FIX 1: The Off-By-One Boundary
 		// ==========================================
 		if currentCount >= limit {
-			log.Printf("🛑 [RATE LIMIT] Blocked Store: %s | Count: %d/%d", merchant.StoreName, currentCount+1, limit)
+			slog.Warn("rate limit exceeded",
+	"store",       merchant.StoreName,
+	"merchant_id", merchant.ID,
+	"count",       currentCount + 1,
+	"limit",       limit,
+	"ip",          c.IP(),
+)
 			return c.Status(fiber.StatusTooManyRequests).JSON(fiber.Map{
 				"success": false,
 				"error":   "Rate limit exceeded. Please slow down.",

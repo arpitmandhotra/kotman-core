@@ -6,9 +6,9 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
-
+     "log/slog"
 	"github.com/gofiber/fiber/v2"
-
+    "github.com/arpitmandhotra/api-integrator/internal/logger"
 	// Ensure your database package is imported here!
 	"github.com/arpitmandhotra/api-integrator/internal/database"
 	"github.com/arpitmandhotra/api-integrator/internal/domain"
@@ -18,6 +18,7 @@ import (
 )
 
 func main() {
+
 
 	// ==========================================
 	// 1. THE DATABASE LAYER
@@ -39,6 +40,10 @@ func main() {
 		APIKey:    merchantKey,
 	}, domain.Merchant{APIKey: merchantKey})
 
+	log := logger.New()
+	slog.SetDefault(log) 
+
+	slog.Info("starting RTO Intelligence API", "port", 3000)
 	// ==========================================
 	// 2. THE SERVICE & HANDLER LAYER
 	// ==========================================
@@ -53,9 +58,8 @@ func main() {
 	app := fiber.New()
 
 	// --> THE SHIELD WALL <--
-	app.Use(middleware.RequestLogger()) // 1. Log traffic
-	app.Use(middleware.RequestLogger()) // 1. Log traffic
-
+	 // 1. Log traffic
+app.Use(middleware.RequestLogger(log))
 	// ❌ DELETE THE OLD BOUNCER HERE!
 	// app.Use(middleware.SecurityBouncer(os.Getenv("REDIS_URL")))
 
@@ -98,31 +102,27 @@ func main() {
 
 	// Run server in a goroutine so it doesn't block
 	// the signal listener below
+	// Run server in a goroutine so it doesn't block
 	go func() {
-		log.Println("Starting RTO Intelligence API on port 3000...")
+		slog.Info("Starting RTO Intelligence API on port 3000...")
 		if err := app.Listen(":3000"); err != nil {
-			log.Fatalf("Server failed to start: %v", err)
+			slog.Error("Server failed to start", "error", err)
+			os.Exit(1)
 		}
 	}()
 
 	// Create a channel to receive OS signals
 	quit := make(chan os.Signal, 1)
-
-	// Tell Go's signal package: forward SIGTERM and SIGINT to our channel
-	// SIGTERM = ECS/Kubernetes sends this on deploy/scale-down
-	// SIGINT  = Ctrl+C in your terminal during local dev
 	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
 
 	// Block here until a signal arrives
 	<-quit
 
-	log.Println("Shutdown signal received. Draining in-flight requests...")
+	slog.Info("Shutdown signal received. Draining in-flight requests...")
 
 	// Give active requests up to 30 seconds to complete
-	// After that, Fiber force-closes remaining connections
 	if err := app.ShutdownWithTimeout(30 * time.Second); err != nil {
-		log.Fatalf("Forced shutdown after timeout: %v", err)
+		slog.Error("Forced shutdown after timeout", "error", err)
+		os.Exit(1)
 	}
-
-	log.Println("Server shut down cleanly.")
 }
