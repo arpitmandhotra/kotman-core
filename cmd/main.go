@@ -55,7 +55,7 @@ func main() {
 
 	// --> THE SHIELD WALL <--
 	app.Use(middleware.RequestLogger())             // 1. Log traffic
-	app.Use(middleware.SecurityBouncer())           // 2. Block spammers
+	app.Use(middleware.SecurityBouncer(os.Getenv("REDIS_URL")))           // 2. Block spammers
 	
 
 	
