@@ -1,7 +1,11 @@
 package middleware
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
 	"log"
+	
 
 	"github.com/arpitmandhotra/api-integrator/internal/domain"
 	"github.com/gofiber/fiber/v2"
@@ -41,6 +45,41 @@ func RequireAPIKey(pg *gorm.DB) fiber.Handler {
 		// Optional: Attach the merchant ID to the context so your service can use it later
 		c.Locals("merchant_id", merchant.ID)
 		
+		return c.Next()
+	}
+}
+// RequireShopifyHMAC verifies incoming webhooks mathematically
+// auth.go
+
+// RequireShopifyHMAC now accepts the secret at startup to avoid runtime system calls
+func RequireShopifyHMAC(secret string) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		shopifySignature := c.Get("X-Shopify-Hmac-Sha256")
+		if shopifySignature == "" {
+			log.Printf("🚨 [WEBHOOK] Blocked request missing HMAC signature from IP: %s", c.IP())
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+				"success": false,
+				"error":   "Missing Signature",
+			})
+		}
+
+		// The secret is already safely in memory here! No os.Getenv needed.
+		rawBody := c.Body()
+
+		mac := hmac.New(sha256.New, []byte(secret))
+		mac.Write(rawBody)
+		
+		calculatedMAC := base64.StdEncoding.EncodeToString(mac.Sum(nil))
+
+		if !hmac.Equal([]byte(shopifySignature), []byte(calculatedMAC)) {
+			log.Printf("🚨 [WEBHOOK] Cryptographic mismatch from IP: %s", c.IP())
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+				"success": false,
+				"error":   "Cryptographic Mismatch",
+			})
+		}
+
+		log.Printf("✅ [WEBHOOK] Shopify signature verified securely.")
 		return c.Next()
 	}
 }
