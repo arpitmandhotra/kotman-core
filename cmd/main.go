@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+"time"
 
 	"github.com/gofiber/fiber/v2"
 
@@ -44,7 +45,7 @@ func main() {
 	// ==========================================
 	trustSvc := service.NewRedisTrustService(redisClient, postgresClient)
 	trustHandler := handlers.NewTrustHandler(trustSvc)
-    adminHandler := handlers.NewAdminHandler(postgresClient)
+  //  adminHandler := handlers.NewAdminHandler(postgresClient)
 	webhookHandler := handlers.NewWebhookHandler(trustSvc)
 
 	// ==========================================
