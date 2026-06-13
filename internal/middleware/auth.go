@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
@@ -28,8 +29,9 @@ func RequireAPIKey(pg *gorm.DB, redisClient *redis.Client) fiber.Handler {
 				"error":   "Missing X-API-Key header. Are you a registered merchant?",
 			})
 		}
-
-		ctx := c.UserContext()
+// ⏱️ Start the 45ms countdown timer
+		ctx, cancel := context.WithTimeout(c.UserContext(), 45*time.Millisecond)
+		defer cancel() // CRITICAL: Destroy timer to prevent memory leaks
 		cacheKey := "auth:apikey:" + apiKey
 
 		// ==========================================
@@ -50,7 +52,7 @@ func RequireAPIKey(pg *gorm.DB, redisClient *redis.Client) fiber.Handler {
 		// THE SLOW PATH: Query Postgres
 		// ==========================================
 		var merchant domain.Merchant
-		err = pg.Where("api_key = ?", apiKey).First(&merchant).Error
+		err = pg.WithContext(ctx).Where("api_key = ?", apiKey).First(&merchant).Error
 		
 		if err != nil {
 			log.Printf("🚨 [AUTH] Blocked Invalid API Key from IP: %s", c.IP())

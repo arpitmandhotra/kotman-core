@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"log"
 	"time"
-
+        "context"
 	"github.com/arpitmandhotra/api-integrator/internal/domain"
 	"github.com/gofiber/fiber/v2"
 	"github.com/redis/go-redis/v9"
@@ -19,29 +19,33 @@ func RequireRateLimit(redisClient *redis.Client) fiber.Handler {
 
 		key := "rate_limit:merchant:" + merchant.ID
 
-		// 1. Get the current time down to the exact nanosecond
 		now := time.Now().UnixNano()
 		
 		// 2. Calculate exactly 60 seconds ago
 		windowStart := now - (1 * time.Minute).Nanoseconds()
 
+		// ⏱️ Start the 45ms countdown timer for the Redis Pipeline
+		ctx, cancel := context.WithTimeout(c.UserContext(), 45*time.Millisecond)
+		defer cancel() // CRITICAL: Destroy timer to prevent memory leaks
+
 		// 3. ATOMIC PIPELINE: Do all Redis math in one single network trip
-		pipe := redisClient.Pipeline()
+		pipe := redisClient.TxPipeline()
 
 		// Step A: Sweep away any requests older than 60 seconds
-		pipe.ZRemRangeByScore(c.UserContext(), key, "0", fmt.Sprintf("%d", windowStart))
-		
+		pipe.ZRemRangeByScore(ctx, key, "0", fmt.Sprintf("%d", windowStart))
+
 		// Step B: Count how many requests are left in the 60-second window
-		countCmd := pipe.ZCard(c.UserContext(), key)
-		
+		countCmd := pipe.ZCard(ctx, key)
+
 		// Step C: Drop the new request into the queue with its exact timestamp
-		pipe.ZAdd(c.UserContext(), key, redis.Z{Score: float64(now), Member: now})
-		
+		pipe.ZAdd(ctx, key, redis.Z{Score: float64(now), Member: now})
+
 		// Step D: Reset the self-destruct timer so inactive queues clear out of memory
-		pipe.Expire(c.UserContext(), key, 1*time.Minute)
-// 4. Execute the pipeline
-		if _, err := pipe.Exec(c.UserContext()); err != nil {
-			log.Printf("🚨 [REDIS] Pipeline failure: %v", err)
+		pipe.Expire(ctx, key, 1*time.Minute)
+
+		// 4. Execute the pipeline
+		if _, err := pipe.Exec(ctx); err != nil {
+			log.Printf("🚨 [REDIS] Pipeline failure or timeout: %v", err)
 			return c.Next() // Fail-open
 		}
 
