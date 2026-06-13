@@ -5,20 +5,22 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"log"
-	
+	"encoding/json"
+	"time"
+	"github.com/redis/go-redis/v9"
 
 	"github.com/arpitmandhotra/api-integrator/internal/domain"
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
 )
 
-// RequireAPIKey checks the "X-API-Key" header against the Postgres database
-func RequireAPIKey(pg *gorm.DB) fiber.Handler {
+// RequireAPIKey checks Upstash Redis first, then falls back to Postgres
+func RequireAPIKey(pg *gorm.DB, redisClient *redis.Client) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		// 1. Extract the key from the request header
 		apiKey := c.Get("X-API-Key")
 
-		// 2. If it's missing entirely, reject instantly (Zero database cost)
+		// 2. If it's missing entirely, reject instantly
 		if apiKey == "" {
 			log.Printf("🚨 [AUTH] Blocked request missing API Key from IP: %s", c.IP())
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
@@ -27,24 +29,50 @@ func RequireAPIKey(pg *gorm.DB) fiber.Handler {
 			})
 		}
 
-		// 3. Look up the key in the Postgres Vault
-		var merchant domain.Merchant
-		err := pg.Where("api_key = ?", apiKey).First(&merchant).Error
+		ctx := c.UserContext()
+		cacheKey := "auth:apikey:" + apiKey
 
+		// ==========================================
+		// THE FAST PATH: Check Redis First
+		// ==========================================
+		cachedMerchant, err := redisClient.Get(ctx, cacheKey).Result()
+		if err == nil {
+			var merchant domain.Merchant
+			if unmarshalErr := json.Unmarshal([]byte(cachedMerchant), &merchant); unmarshalErr == nil {
+				// CACHE HIT! Set BOTH backpack variables to keep everything happy
+				c.Locals("merchant", merchant)       // For the Rate Limiter
+				c.Locals("merchant_id", merchant.ID) // For the Trust Handler
+				return c.Next()
+			}
+		}
+
+		// ==========================================
+		// THE SLOW PATH: Query Postgres
+		// ==========================================
+		var merchant domain.Merchant
+		err = pg.Where("api_key = ?", apiKey).First(&merchant).Error
+		
 		if err != nil {
-			log.Printf("🚨 [AUTH] Blocked INVALID API Key from IP: %s", c.IP())
+			log.Printf("🚨 [AUTH] Blocked Invalid API Key from IP: %s", c.IP())
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
 				"success": false,
 				"error":   "Invalid API Key. Access Denied.",
 			})
 		}
 
-		// 4. Success! Let them through and log the store name
-		log.Printf("🔓 [AUTH] Access granted to Store: %s", merchant.StoreName)
-		
-		// Optional: Attach the merchant ID to the context so your service can use it later
-		c.Locals("merchant_id", merchant.ID)
-		
+		// ==========================================
+		// CACHE POPULATION: Save for next time
+		// ==========================================
+		merchantJSON, _ := json.Marshal(merchant)
+		// Save to Redis with a 5-Minute Time-To-Live (TTL)
+		redisClient.Set(ctx, cacheKey, merchantJSON, 5*time.Minute)
+
+		log.Printf("✅ [AUTH] Access granted to Store: %s", merchant.StoreName)
+
+		// Set BOTH backpack variables
+		c.Locals("merchant", merchant)       // For the Rate Limiter
+		c.Locals("merchant_id", merchant.ID) // For the Trust Handler
+
 		return c.Next()
 	}
 }

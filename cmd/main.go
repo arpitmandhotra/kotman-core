@@ -69,7 +69,7 @@ func main() {
 
 	// DOOR A: Private Enterprise (Uses Database API Keys + Distributed Redis Limiting)
 	app.Post("/v1/trust",
-		middleware.RequireAPIKey(postgresClient), // 1. Check ID & open the backpack
+		middleware.RequireAPIKey(postgresClient,redisClient), // 1. Check ID & open the backpack
 		middleware.RequireRateLimit(redisClient), // 2. Check Upstash ZSET for Sliding Window limit
 		trustHandler.HandleTrustScore,            // 3. Run the Core Engine math
 	)
