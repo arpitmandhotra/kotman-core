@@ -5,6 +5,7 @@ import (
 	"log"
 	"time"
         "context"
+		"math/rand"
 	"github.com/arpitmandhotra/api-integrator/internal/domain"
 	"github.com/gofiber/fiber/v2"
 	"github.com/redis/go-redis/v9"
@@ -26,34 +27,49 @@ func RequireRateLimit(redisClient *redis.Client) fiber.Handler {
 
 		// ⏱️ Start the 45ms countdown timer for the Redis Pipeline
 		ctx, cancel := context.WithTimeout(c.UserContext(), 45*time.Millisecond)
-		defer cancel() // CRITICAL: Destroy timer to prevent memory leaks
+		defer cancel() 
 
-		// 3. ATOMIC PIPELINE: Do all Redis math in one single network trip
-		pipe := redisClient.TxPipeline()
+		// ==========================================
+		// FIX 2: Prevent ZAdd Nanosecond Collisions
+		// ==========================================
+		uniqueMember := fmt.Sprintf("%d-%d", now, rand.Int63())
 
-		// Step A: Sweep away any requests older than 60 seconds
+		// 3. ATOMIC PIPELINE
+		pipe := redisClient.TxPipeline() 
 		pipe.ZRemRangeByScore(ctx, key, "0", fmt.Sprintf("%d", windowStart))
-
-		// Step B: Count how many requests are left in the 60-second window
 		countCmd := pipe.ZCard(ctx, key)
-
-		// Step C: Drop the new request into the queue with its exact timestamp
-		pipe.ZAdd(ctx, key, redis.Z{Score: float64(now), Member: now})
-
-		// Step D: Reset the self-destruct timer so inactive queues clear out of memory
+		
+		// Drop the unique member into the queue
+		pipe.ZAdd(ctx, key, redis.Z{Score: float64(now), Member: uniqueMember})
 		pipe.Expire(ctx, key, 1*time.Minute)
 
 		// 4. Execute the pipeline
 		if _, err := pipe.Exec(ctx); err != nil {
 			log.Printf("🚨 [REDIS] Pipeline failure or timeout: %v", err)
-			return c.Next() // Fail-open
+			return c.Next() 
 		}
 
-		// === 🚀 THE NEW HEADER LOGIC ===
-		// Convert the Redis ZCard count to an integer
+		// 5. Evaluate the Limit
 		currentCount := int(countCmd.Val())
-		limit := 10
-		remaining := limit - currentCount
+		limit := 10 // Temporary hardcode, will move to config later
+
+		// ==========================================
+		// FIX 1: The Off-By-One Boundary
+		// ==========================================
+		if currentCount >= limit {
+			log.Printf("🛑 [RATE LIMIT] Blocked Store: %s | Count: %d/%d", merchant.StoreName, currentCount+1, limit)
+			return c.Status(fiber.StatusTooManyRequests).JSON(fiber.Map{
+				"success": false,
+				"error":   "Rate limit exceeded. Please slow down.",
+			})
+		}
+
+		// Tell the merchant exactly when their 60-second window resets
+	// ==========================================
+		// FIX 3: Calculate Remaining mathematically
+		// ==========================================
+		// currentCount is what was in the DB before this request, so we subtract (currentCount + 1)
+		remaining := limit - (currentCount + 1)
 		if remaining < 0 {
 			remaining = 0
 		}
@@ -65,18 +81,8 @@ func RequireRateLimit(redisClient *redis.Client) fiber.Handler {
 		c.Set("X-RateLimit-Limit", fmt.Sprintf("%d", limit))
 		c.Set("X-RateLimit-Remaining", fmt.Sprintf("%d", remaining))
 		c.Set("X-RateLimit-Reset", fmt.Sprintf("%d", resetTime))
-		// ===============================
 
-		// 5. The Block 
-		if currentCount > limit {
-			log.Printf("🚨 [SECURITY] Sliding Window limit exceeded for Store: %s", merchant.StoreName)
-			return c.Status(fiber.StatusTooManyRequests).JSON(fiber.Map{
-				"success": false,
-				"error":   "Too many requests. Please calm down and try again in a minute.",
-			})
-		}
-
+		// Let the request pass through to the next handler
 		return c.Next()
-
 	}
 }
