@@ -1,33 +1,26 @@
 package middleware
 
 import (
-	"log"
-	"time"
+    "log/slog"
+    "time"
 
-	"github.com/gofiber/fiber/v2"
+    "github.com/gofiber/fiber/v2"
 )
 
-// RequestLogger intercepts every HTTP request to measure speed and log traffic
-func RequestLogger() fiber.Handler {
-	return func(c *fiber.Ctx) error {
-		// 1. Start the stopwatch before the request hits the engine
-		start := time.Now()
+func RequestLogger(log *slog.Logger) fiber.Handler {
+    return func(c *fiber.Ctx) error {
+        start := time.Now()
+        err   := c.Next()
 
-		// 2. Pass control to the next handler (e.g., your Webhook or Trust route)
-		err := c.Next()
+        log.Info("request",
+            "method",      c.Method(),
+            "path",        c.Path(),
+            "status",      c.Response().StatusCode(),
+            "ip",          c.IP(),
+            "latency_ms",  time.Since(start).Milliseconds(),
+            "merchant_id", c.Locals("merchant_id"),
+        )
 
-		// 3. Stop the stopwatch the exact millisecond the response is ready
-		duration := time.Since(start)
-
-		// 4. Print the forensic traffic log to your terminal
-		log.Printf("[TRAFFIC] %s | %s | Status: %d | IP: %s | Latency: %v",
-			c.Method(),
-			c.Path(),
-			c.Response().StatusCode(),
-			c.IP(),
-			duration,
-		)
-
-		return err
-	}
+        return err
+    }
 }

@@ -5,11 +5,11 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
-	"log"
+	
 	"encoding/json"
 	"time"
 	"github.com/redis/go-redis/v9"
-
+     "log/slog"
 	"github.com/arpitmandhotra/api-integrator/internal/domain"
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
@@ -23,7 +23,7 @@ func RequireAPIKey(pg *gorm.DB, redisClient *redis.Client) fiber.Handler {
 
 		// 2. If it's missing entirely, reject instantly
 		if apiKey == "" {
-			log.Printf("🚨 [AUTH] Blocked request missing API Key from IP: %s", c.IP())
+			slog.Warn("auth blocked missing key", "ip", c.IP())
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
 				"success": false,
 				"error":   "Missing X-API-Key header. Are you a registered merchant?",
@@ -55,7 +55,7 @@ func RequireAPIKey(pg *gorm.DB, redisClient *redis.Client) fiber.Handler {
 		err = pg.WithContext(ctx).Where("api_key = ?", apiKey).First(&merchant).Error
 		
 		if err != nil {
-			log.Printf("🚨 [AUTH] Blocked Invalid API Key from IP: %s", c.IP())
+			slog.Warn("auth blocked invalid key", "ip", c.IP())
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
 				"success": false,
 				"error":   "Invalid API Key. Access Denied.",
@@ -69,7 +69,11 @@ func RequireAPIKey(pg *gorm.DB, redisClient *redis.Client) fiber.Handler {
 		// Save to Redis with a 5-Minute Time-To-Live (TTL)
 		redisClient.Set(ctx, cacheKey, merchantJSON, 5*time.Minute)
 
-		log.Printf("✅ [AUTH] Access granted to Store: %s", merchant.StoreName)
+		slog.Info("auth granted",
+	"store", merchant.StoreName,
+	"merchant_id", merchant.ID,
+	"ip", c.IP(),
+)
 
 		// Set BOTH backpack variables
 		c.Locals("merchant", merchant)       // For the Rate Limiter
@@ -86,7 +90,7 @@ func RequireShopifyHMAC(secret string) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		shopifySignature := c.Get("X-Shopify-Hmac-Sha256")
 		if shopifySignature == "" {
-			log.Printf("🚨 [WEBHOOK] Blocked request missing HMAC signature from IP: %s", c.IP())
+			slog.Warn("webhook blocked missing signature", "ip", c.IP())
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
 				"success": false,
 				"error":   "Missing Signature",
@@ -102,14 +106,14 @@ func RequireShopifyHMAC(secret string) fiber.Handler {
 		calculatedMAC := base64.StdEncoding.EncodeToString(mac.Sum(nil))
 
 		if !hmac.Equal([]byte(shopifySignature), []byte(calculatedMAC)) {
-			log.Printf("🚨 [WEBHOOK] Cryptographic mismatch from IP: %s", c.IP())
+			slog.Warn("webhook cryptographic mismatch", "ip", c.IP())
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
 				"success": false,
 				"error":   "Cryptographic Mismatch",
 			})
 		}
 
-		log.Printf("✅ [WEBHOOK] Shopify signature verified securely.")
+		slog.Info("webhook signature verified securely", "ip", c.IP())
 		return c.Next()
 	}
 }
