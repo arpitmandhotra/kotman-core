@@ -49,7 +49,7 @@ func main() {
 	// ==========================================
 	trustSvc := service.NewRedisTrustService(redisClient, postgresClient)
 	trustHandler := handlers.NewTrustHandler(trustSvc)
-	//  adminHandler := handlers.NewAdminHandler(postgresClient)
+  adminHandler := handlers.NewAdminHandler(postgresClient)
 	webhookHandler := handlers.NewWebhookHandler(trustSvc)
 
 	// ==========================================
@@ -77,7 +77,17 @@ app.Use(middleware.RequestLogger(log))
 		middleware.RequireRateLimit(redisClient), // 2. Check Upstash ZSET for Sliding Window limit
 		trustHandler.HandleTrustScore,            // 3. Run the Core Engine math
 	)
-
+// ==========================================
+	// DOOR C: Private Admin Backdoor (Uses Master Key)
+	// ==========================================
+	adminGroup := app.Group("/v1/admin")
+	
+	// 1. Place the bouncer at the entrance of the hallway
+	adminGroup.Use(middleware.RequireAdminKey()) 
+	
+	// 2. Add your secure routes behind the bouncer
+	// (Check your admin_handler.go file to ensure "UnblockMerchant" matches your actual function name)
+	adminGroup.Post("/unblock", adminHandler.GetRecentBlocks)
 	app.Get("/health", func(c *fiber.Ctx) error {
 		// ping Redis
 		_, redisErr := redisClient.Ping(c.UserContext()).Result()
