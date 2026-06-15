@@ -60,8 +60,8 @@ func main() {
 	// --> THE SHIELD WALL <--
 	 // 1. Log traffic
 app.Use(middleware.RequestLogger(log))
-	// ❌ DELETE THE OLD BOUNCER HERE!
-	// app.Use(middleware.SecurityBouncer(os.Getenv("REDIS_URL")))
+	
+	
 
 	// ==========================================
 	// 4. THE ROUTES
