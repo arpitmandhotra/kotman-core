@@ -24,7 +24,7 @@ type TrustResponse struct {
 }
 	type WebhookPayload struct {
 		//The variables here need to have there name started from capital letters so that the fiber mapping the json can see it 
-		PhoneHash string `json:"phone_hash"`
+		Phone string `json:"phone"`
 		Reason    string `json:"reason"`
 	}
 type BadActorRecord struct{

@@ -2,7 +2,7 @@ package handlers
 
 import (
 	"log"
-
+    "github.com/arpitmandhotra/api-integrator/internal/crypto"
 	"github.com/arpitmandhotra/api-integrator/internal/service"
 	"github.com/gofiber/fiber/v2"
 )
@@ -18,7 +18,7 @@ func NewTrustHandler(trustSvc service.TrustService) *TrustHandler {
 func (h *TrustHandler) HandleTrustScore(c *fiber.Ctx) error {
 	// 1. Expand the struct to catch the IP Address from Postman
 	type TrustScoreRequest struct {
-		PhoneHash string `json:"phone_hash"`
+		Phone	 string `json:"phone"`
 		IPAddress string `json:"ip_address"` // NEW
 		SessionID string `json:"session_id"`
 	}
@@ -28,11 +28,11 @@ func (h *TrustHandler) HandleTrustScore(c *fiber.Ctx) error {
 		log.Println("Error parsing JSON:", err)
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid request body"})
 	}
-
+    phoneHash:=crypto.HashPhone(req.Phone)
 	ctx := c.UserContext()
 
 	// 2. Pass BOTH the phone hash and the IP Address into the brain
-	resp, err := h.trustService.EvaluateRisk(ctx, req.PhoneHash, req.IPAddress)
+	resp, err := h.trustService.EvaluateRisk(ctx, phoneHash, req.IPAddress)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to evaluate risk"})
 	}
