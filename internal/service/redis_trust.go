@@ -81,6 +81,7 @@ func (s *RedisTrustService) EvaluateRisk(ctx context.Context, phoneHash string, 
 
 		// If it's not in Postgres either, the user is completely clean!
 		if dbErr != nil {
+			s.db.Set(ctx, phoneHash, "85", 15*time.Minute)
 			return 85, nil // 85 = High Trust
 		}
 
