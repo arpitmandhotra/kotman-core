@@ -49,11 +49,13 @@ func RequireRateLimit(redisClient *redis.Client) fiber.Handler {
 	"error", err, 
 	"ip", c.IP(),
 )
-			return c.Next() 
+			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
+        "error": "Security validation temporarily unavailable",
+    })
 		}
 
 		// 5. Evaluate the Limit
-		currentCount := int(countCmd.Val())
+		currentCount := int(countCmd.Val()) // getting the value in redis cache
 		limit := 10 // Temporary hardcode, will move to config later
 
 		// ==========================================
