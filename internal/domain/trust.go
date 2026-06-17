@@ -31,5 +31,6 @@ type BadActorRecord struct{
 	gorm.Model
 	PhoneHash string
 	Reason string
+	MerchantID string    
 	LockedAt  time.Time
 }
