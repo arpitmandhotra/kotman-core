@@ -1,0 +1,27 @@
+# --- Security / Secrets (CRITICAL) ---
+.env
+
+# --- Go Binaries ---
+# When you compile your code, it creates these executable files. 
+# We don't upload them because servers build their own.
+/api-integrator
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+bin/
+
+# --- Go Test & Coverage ---
+*.test
+*.out
+
+# --- Dependency Directories ---
+# If you ever use 'go mod vendor', this stops Git from uploading 10,000 external library files
+vendor/
+
+# --- IDEs and OS Files ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
