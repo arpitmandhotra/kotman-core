@@ -10,6 +10,7 @@ import (
 	"github.com/gofiber/fiber/v2"
     "github.com/arpitmandhotra/api-integrator/internal/logger"
 	// Ensure your database package is imported here!
+	"github.com/gofiber/fiber/v2/middleware/cors"
 	"github.com/arpitmandhotra/api-integrator/internal/database"
 	"github.com/arpitmandhotra/api-integrator/internal/domain"
 	"github.com/arpitmandhotra/api-integrator/internal/handlers"
@@ -56,6 +57,13 @@ func main() {
 	// 3. THE ROUTER & MIDDLEWARE LAYER
 	// ==========================================
 	app := fiber.New()
+	// 1. The CORS Bridge (Must be FIRST)
+    // This tells browser: "Yes, we accept traffic from Shopify frontends, and we expect an API key."
+    app.Use(cors.New(cors.Config{
+        AllowOrigins: "*", // For local testing. For production, change to "https://your-client.myshopify.com"
+        AllowHeaders: "Origin, Content-Type, Accept, X-API-Key",
+        AllowMethods: "GET, POST, OPTIONS",
+    }))
 
 	// --> THE SHIELD WALL <--
 	 // 1. Log traffic
@@ -81,31 +89,37 @@ app.Use(middleware.RequestLogger(log))
 	// DOOR C: Private Admin Backdoor (Uses Master Key)
 	// ==========================================
 	adminGroup := app.Group("/v1/admin")
-	
-	// 1. Place the bouncer at the entrance of the hallway
-	adminGroup.Use(middleware.RequireAdminKey()) 
-	
-	// 2. Add your secure routes behind the bouncer
-	// (Check your admin_handler.go file to ensure "UnblockMerchant" matches your actual function name)
-	adminGroup.Post("/unblock", adminHandler.GetRecentBlocks)
-	app.Get("/health", func(c *fiber.Ctx) error {
-		// ping Redis
-		_, redisErr := redisClient.Ping(c.UserContext()).Result()
-		// ping Postgres
-		sqlDB, _ := postgresClient.DB()
-		postgresErr := sqlDB.PingContext(c.UserContext())
+    
+    // 1. Place YOUR advanced bouncer at the entrance of the hallway
+    // We pass your exact variable names: postgresClient and redisClient
+    adminGroup.Use(middleware.RequireAPIKey(postgresClient, redisClient)) 
+    
+    // 2. Add your secure routes behind the bouncer
+    // Your existing unblock route
+    adminGroup.Post("/unblock", adminHandler.GetRecentBlocks)
 
-		if redisErr != nil || postgresErr != nil {
-			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
-				"status":   "unhealthy",
-				"redis":    redisErr == nil,
-				"postgres": postgresErr == nil,
-			})
-		}
-		return c.Status(fiber.StatusOK).JSON(fiber.Map{
-			"status": "healthy",
-		})
-	})
+    // THE NEW VAULT DOOR: Your CSV Handler
+    adminGroup.Post("/import-csv", adminHandler.ImportBadActorsCSV)
+
+    // 3. Public Health Check (Untouched - this code is perfect)
+    app.Get("/health", func(c *fiber.Ctx) error {
+        // ping Redis
+        _, redisErr := redisClient.Ping(c.UserContext()).Result()
+        // ping Postgres
+        sqlDB, _ := postgresClient.DB()
+        postgresErr := sqlDB.PingContext(c.UserContext())
+
+        if redisErr != nil || postgresErr != nil {
+            return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
+                "status":   "unhealthy",
+                "redis":    redisErr == nil,
+                "postgres": postgresErr == nil,
+            })
+        }
+        return c.Status(fiber.StatusOK).JSON(fiber.Map{
+            "status": "healthy",
+        })
+    })
 	// Admin Route (We will secure this separately in Sprint 4)
 	// 5. START UP — with graceful shutdown
 	// =========================================
