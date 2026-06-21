@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"testing"
-	
 
 	"github.com/arpitmandhotra/api-integrator/internal/domain"
 )
@@ -13,7 +12,7 @@ import (
 type mockDependencies struct {
 	redisIncrFunc func(ctx context.Context, key string) (int64, error)
 	redisGetFunc  func(ctx context.Context, key string) (string, error)
-	postgresFunc  func(phoneHash string) (*domain.BadActorRecord, error)
+	postgresFunc  func(phoneHash string) (*domain.TrustProfile, error)
 }
 
 func TestEvaluateRisk_AllPaths(t *testing.T) {
@@ -61,8 +60,8 @@ func TestEvaluateRisk_AllPaths(t *testing.T) {
 				deps.redisIncrFunc = func(ctx context.Context, key string) (int64, error) { return 1, nil }
 				deps.redisGetFunc = func(ctx context.Context, key string) (string, error) { return "", errors.New("redis: nil") }
 				// Postgres returns record not found (clean user)
-				deps.postgresFunc = func(phoneHash string) (*domain.BadActorRecord, error) {
-					return nil, nil 
+				deps.postgresFunc = func(phoneHash string) (*domain.TrustProfile, error) {
+					return nil, nil
 				}
 			},
 			expectedAction: "ALLOW_COD",
@@ -76,10 +75,11 @@ func TestEvaluateRisk_AllPaths(t *testing.T) {
 				deps.redisIncrFunc = func(ctx context.Context, key string) (int64, error) { return 1, nil }
 				deps.redisGetFunc = func(ctx context.Context, key string) (string, error) { return "", errors.New("redis: nil") }
 				// Postgres finds an archived blocklist record
-				deps.postgresFunc = func(phoneHash string) (*domain.BadActorRecord, error) {
-					return &domain.BadActorRecord{
-						PhoneHash: phoneHash,
-						Reason:    "High return rate history",
+				deps.postgresFunc = func(phoneHash string) (*domain.TrustProfile, error) {
+				return &domain.TrustProfile{
+						PhoneHash:       phoneHash,
+						IsBlacklisted:   true,
+						BlacklistReason: "High return rate history",
 					}, nil
 				}
 			},
@@ -105,11 +105,11 @@ func TestEvaluateRisk_AllPaths(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			//ctx := context.Background()
-			
+
 			// Initialize your service here wrapping the mock functions defined in setupMocks
 			// Example execution and assertion:
 			// res, err := testService.EvaluateRisk(ctx, tt.phoneHash, tt.ipAddress)
-			
+
 			// assert.Equal(t, tt.expectedAction, res.Action)
 		})
 	}

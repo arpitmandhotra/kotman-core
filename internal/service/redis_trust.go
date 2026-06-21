@@ -5,22 +5,23 @@ import (
 	"log/slog"
 	"strconv"
 	"time"
-    "gorm.io/gorm"
+
 	"github.com/arpitmandhotra/api-integrator/internal/domain"
-	"golang.org/x/sync/singleflight"
 	"github.com/redis/go-redis/v9"
+	"golang.org/x/sync/singleflight"
+	"gorm.io/gorm"
 )
 
 type RedisTrustService struct {
-	db *redis.Client
-	pg    *gorm.DB
+	db           *redis.Client
+	pg           *gorm.DB
 	requestGroup singleflight.Group
 }
 
-func NewRedisTrustService(client *redis.Client,pgClient *gorm.DB) *RedisTrustService {
+func NewRedisTrustService(client *redis.Client, pgClient *gorm.DB) *RedisTrustService {
 	return &RedisTrustService{
 		db: client,
-	pg:  pgClient}
+		pg: pgClient}
 }
 
 // EvaluateRisk now accepts the ipAddress to catch bots!
@@ -41,10 +42,10 @@ func (s *RedisTrustService) EvaluateRisk(ctx context.Context, phoneHash string, 
 	}
 
 	if attempts > 3 {
-	slog.Warn("velocity bot detected",
-    "ip",       ipAddress,
-    "attempts", attempts,
-	)
+		slog.Warn("velocity bot detected",
+			"ip", ipAddress,
+			"attempts", attempts,
+		)
 		return domain.TrustResponse{
 			PhoneHash: phoneHash,
 			Score:     10,
@@ -59,16 +60,16 @@ func (s *RedisTrustService) EvaluateRisk(ctx context.Context, phoneHash string, 
 	// 1. THE FAST PATH (Check RAM)
 	val, err := s.db.Get(ctx, phoneHash).Result()
 	if err == nil { // Found in Redis!
-	slog.Info("cache hit",
-	"phone_hash", phoneHash[:8]+"...",
-	"score",      val, // val is the raw string from Redis, perfectly safe to log here
-	"action",     "HIDE_COD",
-)
+		slog.Info("cache hit",
+			"phone_hash", phoneHash[:8]+"...",
+			"score", val, // val is the raw string from Redis, perfectly safe to log here
+			"action", "HIDE_COD",
+		)
 		parsedScore, _ := strconv.Atoi(val)
 		return domain.TrustResponse{
 			PhoneHash: phoneHash,
 			Score:     parsedScore,
-			Action:    "HIDE_COD", 
+			Action:    "HIDE_COD",
 		}, nil
 	}
 
@@ -76,7 +77,7 @@ func (s *RedisTrustService) EvaluateRisk(ctx context.Context, phoneHash string, 
 	v, err, shared := s.requestGroup.Do(phoneHash, func() (interface{}, error) {
 		slog.Info("cache miss querying postgres", "phone_hash", phoneHash[:8]+"...")
 
-		var record domain.BadActorRecord
+		var record domain.TrustProfile
 		dbErr := s.pg.Where("phone_hash = ?", phoneHash).First(&record).Error
 
 		// If it's not in Postgres either, the user is completely clean!
@@ -120,14 +121,18 @@ func (s *RedisTrustService) ReportBadActor(ctx context.Context, phoneHash string
 		return err
 	}
 	slog.Info("bad actor saved to redis", "phone_hash", phoneHash[:8]+"...", "reason", reason)
-	record:= domain.BadActorRecord{
-		PhoneHash: phoneHash,
-		Reason: reason,
-		LockedAt:time.Now(),
-	}
+	// 1. Create the time variable first so we can pass its pointer
+		now := time.Now()
+
+		record := domain.TrustProfile{
+			PhoneHash:       phoneHash,
+			IsBlacklisted:   true,     // Explicitly mark as a bad actor
+			BlacklistReason: reason,   // Use the parameter passed into the function
+			LockedAt:        &now,     // Pass the memory address pointer
+		}
 	if err := s.pg.Create(&record).Error; err != nil {
-		
-slog.Error("failed to archive bad actor in postgres", "error", err, "phone_hash", phoneHash[:8]+"...")
+
+		slog.Error("failed to archive bad actor in postgres", "error", err, "phone_hash", phoneHash[:8]+"...")
 		return err
 	}
 	slog.Info("bad actor archived in postgres", "phone_hash", phoneHash[:8]+"...")

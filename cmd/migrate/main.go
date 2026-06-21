@@ -20,7 +20,7 @@ func main() {
 	}
 
 	log.Println("📦 Syncing domain.BadActorRecord schema...")
-	if err := db.AutoMigrate(&domain.BadActorRecord{}); err != nil {
+	if err := db.AutoMigrate(&domain.TrustProfile{}); err != nil {
 		log.Fatalf("❌ Failed to migrate BadActorRecord: %v", err)
 	}
 
