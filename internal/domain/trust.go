@@ -27,10 +27,22 @@ type TrustResponse struct {
 		Phone string `json:"phone"`
 		Reason    string `json:"reason"`
 	}
-type BadActorRecord struct{
-	gorm.Model
-	PhoneHash string
-	Reason string
-	MerchantID string    
-	LockedAt  time.Time
+type TrustProfile struct {
+	gorm.Model // This automatically gives us ID, CreatedAt, UpdatedAt, and DeletedAt
+
+	PhoneHash           string `gorm:"uniqueIndex;not null"`
+	FirstSeenMerchantID string `gorm:"index"`
+
+	// --- IMMUTABLE HISTORICAL FACTS (The AI's Diet) ---
+	TotalOrders          int     `gorm:"default:0"`
+	SuccessfulDeliveries int     `gorm:"default:0"`
+	TotalRTOs            int     `gorm:"default:0"`
+	TotalCancellations   int     `gorm:"default:0"`
+	TotalRevenueSpent    float64 `gorm:"default:0"`
+	LastActivityDate     *time.Time 
+
+	// --- System Overrides ---
+	IsBlacklisted   bool       `gorm:"default:false"`
+	BlacklistReason string     `json:"reason"` 
+	LockedAt        *time.Time 
 }

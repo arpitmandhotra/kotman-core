@@ -1,14 +1,15 @@
 package handlers
 
 import (
-	"github.com/arpitmandhotra/api-integrator/internal/domain"
 	"encoding/csv"
-    "io"
-    "log/slog"
+	"io"
+	"log/slog"
 
-    "github.com/gofiber/fiber/v2"
-    // Adjust this import path to match your actual domain/crypto packages
-    "github.com/arpitmandhotra/api-integrator/internal/crypto"
+	"github.com/arpitmandhotra/api-integrator/internal/domain"
+
+	"github.com/gofiber/fiber/v2"
+	// Adjust this import path to match your actual domain/crypto packages
+	"github.com/arpitmandhotra/api-integrator/internal/crypto"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -20,115 +21,127 @@ type AdminHandler struct {
 func NewAdminHandler(pg *gorm.DB) *AdminHandler {
 	return &AdminHandler{pg: pg}
 }
+
 // ImportBadActorsCSV handles the multipart form upload
 func (h *AdminHandler) ImportBadActorsCSV(c *fiber.Ctx) error {
-    // 1. Grab the multipart file metadata from the request
-    fileHeader, err := c.FormFile("file")
-    if err != nil {
-        return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-            "error": "missing 'file' in form-data",
-        })
-    }
+	// 1. Grab the multipart file metadata from the request
+	fileHeader, err := c.FormFile("file")
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "missing 'file' in form-data",
+		})
+	}
 
-    // 2. Open the file stream (This prevents loading the whole file into RAM)
-    file, err := fileHeader.Open()
-    if err != nil {
-        return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-            "error": "failed to open file stream",
-        })
-    }
-    defer file.Close() // ALWAYS defer the close to prevent memory leaks
+	// 2. Open the file stream (This prevents loading the whole file into RAM)
+	file, err := fileHeader.Open()
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "failed to open file stream",
+		})
+	}
+	defer file.Close() // ALWAYS defer the close to prevent memory leaks
 
-    // 3. Initialize the CSV Reader
-    reader := csv.NewReader(file)
+	// 3. Initialize the CSV Reader
+	reader := csv.NewReader(file)
 
-    // 4. Read the header row to validate the merchant's format
-    headers, err := reader.Read()
-    if err != nil {
-        return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-            "error": "failed to read csv headers or file is empty",
-        })
-    }
+	// 4. Read the header row to validate the merchant's format
+	headers, err := reader.Read()
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "failed to read csv headers or file is empty",
+		})
+	}
 
-    // Strict format enforcement
-    if len(headers) < 2 || headers[0] != "phone" || headers[1] != "reason" {
-        return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-            "error": "invalid csv format. Expected headers: phone, reason",
-        })
-    }
+	// Strict format enforcement
+	if len(headers) < 2 || headers[0] != "phone" || headers[1] != "reason" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "invalid csv format. Expected headers: phone, reason",
+		})
+	}
 
-    var batch []domain.BadActorRecord
-    const batchSize = 1000 // We will send to Postgres in blocks of 1,000
-    totalProcessed := 0
-    totalSkipped := 0
+	var batch []domain.TrustProfile
+	const batchSize = 1000 // We will send to Postgres in blocks of 1,000
+	totalProcessed := 0
+	totalSkipped := 0
 
-    // Get the merchant ID from the context (set by your RequireAdminKey auth middleware)
-    merchantID, _ := c.Locals("merchant_id").(string)
+	// Get the merchant ID from the context (set by your RequireAdminKey auth middleware)
+	merchantID, _ := c.Locals("merchant_id").(string)
 
-    // 5. Stream the rows continuously
-    for {
-        row, err := reader.Read()
-        if err == io.EOF {
-            break // End of file reached, exit the loop cleanly
-        }
-        if err != nil {
-            slog.Warn("skipping malformed csv row", "error", err)
-            totalSkipped++
-            continue
-        }
+	// 5. Stream the rows continuously
+	for {
+		row, err := reader.Read()
+		if err == io.EOF {
+			break // End of file reached, exit the loop cleanly
+		}
+		if err != nil {
+			slog.Warn("skipping malformed csv row", "error", err)
+			totalSkipped++
+			continue
+		}
 
-        rawPhone := row[0]
-        reason := row[1]
+		rawPhone := row[0]
+		reason := row[1]
 
-        if rawPhone == "" {
-            totalSkipped++
-            continue
-        }
+		if rawPhone == "" {
+			totalSkipped++
+			continue
+		}
 
-        // 6. The Crypto Wiring - Hash before it ever touches your database
-        phoneHash := crypto.HashPhone(rawPhone)
+		// 6. The Crypto Wiring - Hash before it ever touches your database
+		phoneHash := crypto.HashPhone(rawPhone)
 
-        // Append the cleaned data to our current batch
-        batch = append(batch, domain.BadActorRecord{
-            PhoneHash:  phoneHash,
-            Reason:     reason,
-            MerchantID: merchantID,
-        })
+		// Append the cleaned data to our current batch
+		// Append the cleaned data to our current batch
+		batch = append(batch, domain.TrustProfile{
+			PhoneHash:           phoneHash,
+			FirstSeenMerchantID: merchantID, // Changed from MerchantID
+			
+			// --- System Overrides ---
+			IsBlacklisted:   true,   // Explicitly mark as a bad actor
+			BlacklistReason: reason, // Changed from Reason
+			
+			// 🧠 --- V2 AI Baseline Initialization --- 🧠
+			// If they are on a merchant's blocklist CSV, we must assume 
+			// they have historically ruined at least one order.
+			TotalOrders: 1, 
+			TotalRTOs:   1, 
+		})
 
-        // 7. Flush to Database when the batch hits 1,000 records
-       if len(batch) >= batchSize {
-    // Direct Gorm bulk insert ignoring duplicates
-    if dbErr := h.pg.WithContext(c.Context()).Clauses(clause.OnConflict{DoNothing: true}).Create(&batch).Error; dbErr != nil {
-        slog.Error("failed to insert batch", "error", dbErr)
-    } else {
-        totalProcessed += len(batch)
-    }
-    
-    // Clear the batch slice for the next 1,000 records, reusing the memory
-    batch = batch[:0] 
+		// 7. Flush to Database when the batch hits 1,000 records
+		if len(batch) >= batchSize {
+			// Direct Gorm bulk insert ignoring duplicates
+			if dbErr := h.pg.WithContext(c.Context()).Clauses(clause.OnConflict{DoNothing: true}).Create(&batch).Error; dbErr != nil {
+				slog.Error("failed to insert batch", "error", dbErr)
+			} else {
+				totalProcessed += len(batch)
+			}
+
+			// Clear the batch slice for the next 1,000 records, reusing the memory
+			batch = batch[:0]
+		}
+	}
+
+	// 8. Flush any leftover records (e.g., the final 342 records of a 5,342 row file)
+	if len(batch) > 0 {
+		if dbErr := h.pg.WithContext(c.Context()).Clauses(clause.OnConflict{DoNothing: true}).Create(&batch).Error; dbErr != nil {
+			slog.Error("failed to insert final batch", "error", dbErr)
+		} else {
+			totalProcessed += len(batch)
+		}
+	}
+
+	// 9. Return the success telemetry to the frontend
+	return c.JSON(fiber.Map{
+		"message":           "import complete",
+		"records_processed": totalProcessed,
+		"records_skipped":   totalSkipped,
+	})
 }
-}
 
-    // 8. Flush any leftover records (e.g., the final 342 records of a 5,342 row file)
-   if len(batch) > 0 {
-    if dbErr := h.pg.WithContext(c.Context()).Clauses(clause.OnConflict{DoNothing: true}).Create(&batch).Error; dbErr != nil {
-        slog.Error("failed to insert final batch", "error", dbErr)
-    } else {
-        totalProcessed += len(batch)
-    }
-}
-
-    // 9. Return the success telemetry to the frontend
-    return c.JSON(fiber.Map{
-        "message":           "import complete",
-        "records_processed": totalProcessed,
-        "records_skipped":   totalSkipped,
-    })
-}
 // GetRecentBlocks fetches the latest scammers caught by the Kotman engine
 func (h *AdminHandler) GetRecentBlocks(c *fiber.Ctx) error {
-	merchantName := "Admin" 
-	var scammers []domain.BadActorRecord
+	merchantName := "Admin"
+	var scammers []domain.TrustProfile
 
 	// Reach into Cold Storage and grab the 50 most recently caught scammers
 	err := h.pg.Order("locked_at desc").Limit(50).Find(&scammers).Error

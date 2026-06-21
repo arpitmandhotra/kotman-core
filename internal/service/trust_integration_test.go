@@ -1,5 +1,3 @@
-
-
 package service_test
 
 import (
@@ -11,13 +9,13 @@ import (
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"
 	"github.com/testcontainers/testcontainers-go/wait"
-	
+
 	goredis "github.com/redis/go-redis/v9"
 	postgres_driver "gorm.io/driver/postgres"
 	"gorm.io/gorm"
-	
+
 	"github.com/arpitmandhotra/api-integrator/internal/domain"
-	"github.com/arpitmandhotra/api-integrator/internal/service" 
+	"github.com/arpitmandhotra/api-integrator/internal/service"
 )
 
 func TestEvaluateRisk_Integration(t *testing.T) {
@@ -78,7 +76,7 @@ func TestEvaluateRisk_Integration(t *testing.T) {
 	// ==========================================
 	// 4. WIRE THE REAL CLIENTS
 	// ==========================================
-	
+
 	// Wire Redis client from container URI
 	redisOpts, err := goredis.ParseURL(redisURI)
 	if err != nil {
@@ -94,7 +92,7 @@ func TestEvaluateRisk_Integration(t *testing.T) {
 	}
 
 	// Run migrations on the test database
-	if err := pgDB.AutoMigrate(&domain.BadActorRecord{}); err != nil {
+	if err := pgDB.AutoMigrate(&domain.TrustProfile{}); err != nil {
 		t.Fatalf("failed to migrate test database: %s", err)
 	}
 
@@ -104,7 +102,7 @@ func TestEvaluateRisk_Integration(t *testing.T) {
 	// ==========================================
 	// 5. THE FIVE TEST CASES
 	// ==========================================
-	
+
 	t.Run("CleanUser_ReturnsAllow", func(t *testing.T) {
 		resp, err := svc.EvaluateRisk(ctx, "unknown_hash_abc123", "1.2.3.4")
 		if err != nil {
@@ -120,10 +118,13 @@ func TestEvaluateRisk_Integration(t *testing.T) {
 
 	t.Run("BadActor_PostgresSeed_ReturnsHide", func(t *testing.T) {
 		badHash := "known_bad_actor_hash"
-		pgDB.Create(&domain.BadActorRecord{
-			PhoneHash: badHash,
-			Reason:    "integration test seed",
-			LockedAt:  time.Now(),
+		now := time.Now() // 1. Create the time variable first
+
+		pgDB.Create(&domain.TrustProfile{
+			PhoneHash:       badHash,
+			IsBlacklisted:   true,                    // Mark as explicitly blocked
+			BlacklistReason: "integration test seed", // Changed from Reason
+			LockedAt:        &now,                    // Pass the pointer
 		})
 
 		resp, err := svc.EvaluateRisk(ctx, badHash, "1.2.3.5")
@@ -187,13 +188,13 @@ func TestEvaluateRisk_Integration(t *testing.T) {
 			t.Fatalf("ReportBadActor failed: %v", err)
 		}
 
-		var record domain.BadActorRecord
+		var record domain.TrustProfile
 		result := pgDB.Where("phone_hash = ?", reportHash).First(&record)
 		if result.Error != nil {
 			t.Errorf("expected bad actor in Postgres, got error: %v", result.Error)
 		}
-		if record.Reason != "order_returned" {
-			t.Errorf("expected reason 'order_returned', got '%s'", record.Reason)
+		if record.BlacklistReason != "order_returned" {
+			t.Errorf("expected reason 'order_returned', got '%s'", record.BlacklistReason)
 		}
 
 		val, _ := redisClient.Get(ctx, reportHash).Result()
