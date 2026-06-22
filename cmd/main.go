@@ -88,6 +88,7 @@ app.Use(middleware.RequestLogger(log))
 // ==========================================
 	// DOOR C: Private Admin Backdoor (Uses Master Key)
 	// ==========================================
+	app.Post("/v1/internal/onboard", adminHandler.OnboardMerchant)
 	adminGroup := app.Group("/v1/admin")
     
     // 1. Place YOUR advanced bouncer at the entrance of the hallway

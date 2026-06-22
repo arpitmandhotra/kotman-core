@@ -1,8 +1,10 @@
 package domain
+
 import (
 	"time"
 	"gorm.io/gorm"
 )
+
 // TrustRequest represents the payload we expect from Shopify.
 // WHY IT'S NECESSARY: Go is strictly typed. It needs a blueprint to map raw JSON text into memory.
 type TrustRequest struct {
@@ -22,11 +24,13 @@ type TrustResponse struct {
 	Score     int    `json:"score"`
 	Action    string `json:"action"`
 }
-	type WebhookPayload struct {
-		//The variables here need to have there name started from capital letters so that the fiber mapping the json can see it 
-		Phone string `json:"phone"`
-		Reason    string `json:"reason"`
-	}
+
+type WebhookPayload struct {
+	//The variables here need to have there name started from capital letters so that the fiber mapping the json can see it 
+	Phone  string `json:"phone"`
+	Reason string `json:"reason"`
+}
+
 type TrustProfile struct {
 	gorm.Model // This automatically gives us ID, CreatedAt, UpdatedAt, and DeletedAt
 
@@ -39,10 +43,42 @@ type TrustProfile struct {
 	TotalRTOs            int     `gorm:"default:0"`
 	TotalCancellations   int     `gorm:"default:0"`
 	TotalRevenueSpent    float64 `gorm:"default:0"`
-	LastActivityDate     *time.Time 
+	LastActivityDate     *time.Time
 
 	// --- System Overrides ---
 	IsBlacklisted   bool       `gorm:"default:false"`
-	BlacklistReason string     `json:"reason"` 
-	LockedAt        *time.Time 
+	BlacklistReason string     `json:"reason"`
+	LockedAt        *time.Time
+}
+
+// GenerateAIFeatures takes stored historical facts and computes live metrics for the ML model
+func (p *TrustProfile) GenerateAIFeatures(currentOrderValue float64) map[string]interface{} {
+	rtoRate := 0.0
+	if p.TotalOrders > 0 {
+		rtoRate = float64(p.TotalRTOs) / float64(p.TotalOrders)
+	}
+
+	cancellationFreq := 0.0
+	if p.TotalOrders > 0 {
+		cancellationFreq = float64(p.TotalCancellations) / float64(p.TotalOrders)
+	}
+
+	avgOrderValue := 0.0
+	if p.SuccessfulDeliveries > 0 {
+		avgOrderValue = p.TotalRevenueSpent / float64(p.SuccessfulDeliveries)
+	}
+
+	orderValueRatio := 1.0
+	if avgOrderValue > 0 {
+		orderValueRatio = currentOrderValue / avgOrderValue
+	}
+
+	// This is the exact data contract payload your friend will fire to their Python AI URL
+	return map[string]interface{}{
+		"network_rto_rate":             rtoRate,
+		"cancellation_frequency":       cancellationFreq,
+		"order_value_to_average_ratio": orderValueRatio,
+		"total_orders_network":         p.TotalOrders,
+		"account_age_days":             time.Since(p.CreatedAt).Hours() / 24,
+	}
 }
