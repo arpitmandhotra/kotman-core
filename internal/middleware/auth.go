@@ -5,11 +5,11 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
-	
 	"encoding/json"
 	"time"
+
 	"github.com/redis/go-redis/v9"
-     "log/slog"
+	"log/slog"
 	"github.com/arpitmandhotra/api-integrator/internal/domain"
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
@@ -29,7 +29,8 @@ func RequireAPIKey(pg *gorm.DB, redisClient *redis.Client) fiber.Handler {
 				"error":   "Missing X-API-Key header. Are you a registered merchant?",
 			})
 		}
-// ⏱️ Start the 45ms countdown timer
+		
+		// ⏱️ Start the 45ms countdown timer
 		ctx, cancel := context.WithTimeout(c.UserContext(), 45*time.Millisecond)
 		defer cancel() // CRITICAL: Destroy timer to prevent memory leaks
 		cacheKey := "auth:apikey:" + apiKey
@@ -41,6 +42,16 @@ func RequireAPIKey(pg *gorm.DB, redisClient *redis.Client) fiber.Handler {
 		if err == nil {
 			var merchant domain.Merchant
 			if unmarshalErr := json.Unmarshal([]byte(cachedMerchant), &merchant); unmarshalErr == nil {
+				
+				// V2 SECURITY: Ensure the cached merchant hasn't been deactivated
+				if !merchant.IsActive {
+					slog.Warn("auth blocked inactive key in cache", "ip", c.IP())
+					return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+						"success": false,
+						"error":   "API Key deactivated. Access Denied.",
+					})
+				}
+
 				// CACHE HIT! Set BOTH backpack variables to keep everything happy
 				c.Locals("merchant", merchant)       // For the Rate Limiter
 				c.Locals("merchant_id", merchant.ID) // For the Trust Handler
@@ -52,10 +63,12 @@ func RequireAPIKey(pg *gorm.DB, redisClient *redis.Client) fiber.Handler {
 		// THE SLOW PATH: Query Postgres
 		// ==========================================
 		var merchant domain.Merchant
-		err = pg.WithContext(ctx).Where("api_key = ?", apiKey).First(&merchant).Error
+		
+		// V2 SECURITY: We now explicitly check that is_active = true in the database
+		err = pg.WithContext(ctx).Where("api_key = ? AND is_active = ?", apiKey, true).First(&merchant).Error
 		
 		if err != nil {
-			slog.Warn("auth blocked invalid key", "ip", c.IP())
+			slog.Warn("auth blocked invalid or inactive key", "ip", c.IP())
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
 				"success": false,
 				"error":   "Invalid API Key. Access Denied.",
@@ -70,10 +83,10 @@ func RequireAPIKey(pg *gorm.DB, redisClient *redis.Client) fiber.Handler {
 		redisClient.Set(ctx, cacheKey, merchantJSON, 5*time.Minute)
 
 		slog.Info("auth granted",
-	"store", merchant.StoreName,
-	"merchant_id", merchant.ID,
-	"ip", c.IP(),
-)
+			"store", merchant.StoreName,
+			"merchant_id", merchant.ID,
+			"ip", c.IP(),
+		)
 
 		// Set BOTH backpack variables
 		c.Locals("merchant", merchant)       // For the Rate Limiter
@@ -82,9 +95,8 @@ func RequireAPIKey(pg *gorm.DB, redisClient *redis.Client) fiber.Handler {
 		return c.Next()
 	}
 }
-// RequireShopifyHMAC verifies incoming webhooks mathematically
-// auth.go
 
+// RequireShopifyHMAC verifies incoming webhooks mathematically
 // RequireShopifyHMAC now accepts the secret at startup to avoid runtime system calls
 func RequireShopifyHMAC(secret string) fiber.Handler {
 	return func(c *fiber.Ctx) error {

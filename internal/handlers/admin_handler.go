@@ -4,7 +4,8 @@ import (
 	"encoding/csv"
 	"io"
 	"log/slog"
-
+      "crypto/rand"
+	"encoding/hex"
 	"github.com/arpitmandhotra/api-integrator/internal/domain"
 
 	"github.com/gofiber/fiber/v2"
@@ -157,5 +158,53 @@ func (h *AdminHandler) GetRecentBlocks(c *fiber.Ctx) error {
 		"merchant":     merchantName,
 		"total_blocks": len(scammers),
 		"data":         scammers,
+	})
+}
+// OnboardMerchantRequest holds incoming data for creating a new Shopify client
+type OnboardMerchantRequest struct {
+	StoreName string `json:"store_name"`
+}
+
+// OnboardMerchant generates a secure API credential and inserts a new merchant profile using UUIDs
+func (h *AdminHandler) OnboardMerchant(c *fiber.Ctx) error {
+	var req OnboardMerchantRequest
+	if err := c.BodyParser(&req); err != nil || req.StoreName == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "A valid store_name string is required",
+		})
+	}
+
+	// 1. Generate 32 bytes of cryptographically secure randomness
+	bytes := make([]byte, 32)
+	if _, err := rand.Read(bytes); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Failed to safely generate crypto random bytes",
+		})
+	}
+
+	// 2. Format a clean token prefix for their storefront integration
+	apiKey := "kt_live_" + hex.EncodeToString(bytes)
+
+	// 3. Assemble the updated Merchant schema
+	merchant := domain.Merchant{
+		StoreName: req.StoreName,
+		APIKey:    apiKey,
+		IsActive:  true,
+		// ID (UUID string format) and Timestamps are automatically handled by Postgres/Gorm definitions
+	}
+
+	// 4. Persistence execution
+	if err := h.pg.Create(&merchant).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Failed to commit new merchant credentials to database",
+		})
+	}
+
+	// 5. Return payload so you can hand this key over to your friend
+	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
+		"message":     "Merchant registered successfully",
+		"merchant_id": merchant.ID, // Spits back the generated UUID string
+		"store_name":  merchant.StoreName,
+		"api_key":     merchant.APIKey,
 	})
 }
