@@ -129,3 +129,52 @@ func RequireShopifyHMAC(secret string) fiber.Handler {
 		return c.Next()
 	}
 }
+// RequireWooCommerceHMAC verifies WooCommerce webhooks mathematically
+func RequireWooCommerceHMAC(secret string) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		wooSignature := c.Get("X-Wc-Webhook-Signature")
+		if wooSignature == "" {
+			slog.Warn("woo webhook blocked missing signature", "ip", c.IP())
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+				"success": false,
+				"error":   "Missing Signature",
+			})
+		}
+
+		rawBody := c.Body()
+		mac := hmac.New(sha256.New, []byte(secret))
+		mac.Write(rawBody)
+		
+		calculatedMAC := base64.StdEncoding.EncodeToString(mac.Sum(nil))
+
+		if !hmac.Equal([]byte(wooSignature), []byte(calculatedMAC)) {
+			slog.Warn("woo cryptographic mismatch", "ip", c.IP())
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+				"success": false,
+				"error":   "Cryptographic Mismatch",
+			})
+		}
+
+		slog.Info("woo webhook signature verified securely", "ip", c.IP())
+		return c.Next()
+	}
+}
+
+// RequireMagentoAuth verifies Magento webhooks (usually via Bearer Token)
+func RequireMagentoAuth(secretToken string) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		authHeader := c.Get("Authorization")
+		expectedHeader := "Bearer " + secretToken
+
+		if authHeader != expectedHeader {
+			slog.Warn("magento webhook unauthorized", "ip", c.IP())
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+				"success": false,
+				"error":   "Unauthorized",
+			})
+		}
+
+		slog.Info("magento webhook verified securely", "ip", c.IP())
+		return c.Next()
+	}
+}
