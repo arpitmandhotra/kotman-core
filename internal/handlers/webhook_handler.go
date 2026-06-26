@@ -186,6 +186,7 @@ func (h *WebhookHandler) HandleProductReview(c *fiber.Ctx) error {
 func (h *WebhookHandler) processFeedback(phoneHash, merchantID, orderID, sku, category string, sentiment float64) {
 	now := time.Now()
 	
+	// 1. Save the raw feedback record
 	feedback := domain.CustomerFeedback{
 		PhoneHash:  phoneHash,
 		MerchantID: merchantID,
@@ -201,6 +202,7 @@ func (h *WebhookHandler) processFeedback(phoneHash, merchantID, orderID, sku, ca
 		return
 	}
 
+	// 2. Fetch the profile
 	var profile domain.TrustProfile
 	err := h.pg.FirstOrCreate(&profile, domain.TrustProfile{PhoneHash: phoneHash}).Error
 	if err != nil {
@@ -208,23 +210,26 @@ func (h *WebhookHandler) processFeedback(phoneHash, merchantID, orderID, sku, ca
 		return
 	}
 
+	// 3. Determine the weight
 	weightData, exists := domain.FeedbackWeights[category]
 	if !exists {
 		weightData = domain.FeedbackWeight{BuyerRiskDelta: -1.0, MerchantSignal: false, ProductSignal: false} 
 	}
 
-	// Update running stats
-	profile.ComplaintCount += 1
-	profile.LastComplaintAt = &now
-	
-	// Apply the risk delta adjustment directly to the profile for the AI scorer
-	profile.RiskAdjustment += weightData.BuyerRiskDelta
+	// 4. Calculate the new Welford mean score locally first
+	// We add +1 to the denominator here because we haven't updated the database count yet
+	newComplaintScore := profile.ComplaintScore + ((sentiment - profile.ComplaintScore) / float64(profile.ComplaintCount+1))
 
-	// This performs the Welford incremental mean calculation update correctly.
-	profile.ComplaintScore = profile.ComplaintScore + ((sentiment - profile.ComplaintScore) / float64(profile.ComplaintCount))
+	// 5. THE FIX: Execute an atomic, targeted update to prevent race conditions
+	updatePayload := map[string]interface{}{
+		"complaint_count":   gorm.Expr("complaint_count + 1"),
+		"risk_adjustment":   gorm.Expr("risk_adjustment + ?", weightData.BuyerRiskDelta),
+		"complaint_score":   newComplaintScore,
+		"last_complaint_at": now,
+	}
 
-	if err := h.pg.Save(&profile).Error; err != nil {
-		slog.Error("failed updates to composite merchant behavior profiling metrics", "error", err)
+	if err := h.pg.Model(&profile).Updates(updatePayload).Error; err != nil {
+		slog.Error("failed atomic update to merchant behavior profiling metrics", "error", err)
 	}
 	
 	slog.Info("successfully processed intent-weighted customer feedback event", "hash", phoneHash[:8], "delta", weightData.BuyerRiskDelta)

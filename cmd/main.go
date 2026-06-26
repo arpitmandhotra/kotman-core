@@ -81,12 +81,21 @@ func main() {
 	// DOOR B: The Omni-Channel Webhook Listeners
 	webhookGroup := app.Group("/v1/webhooks")
 	
-	// NEW: All 4 of our webhook doors are now wired up securely!
+	// Shopify is our primary driver; it MUST have a secret.
 	webhookGroup.Post("/shopify", middleware.RequireShopifyHMAC(shopifySecret), webhookHandler.HandleShopify)
-	webhookGroup.Post("/woocommerce", middleware.RequireWooCommerceHMAC(wooSecret), webhookHandler.HandleWooCommerce)
-	webhookGroup.Post("/magento", middleware.RequireMagentoAuth(magentoSecret), webhookHandler.HandleMagento)
 	webhookGroup.Post("/shopify/review", middleware.RequireShopifyHMAC(shopifySecret), webhookHandler.HandleProductReview)
 
+	// FIX 2: Conditional route registration. 
+	// WooCommerce and Magento endpoints only exist if their secrets are configured.
+	if wooSecret != "" {
+		webhookGroup.Post("/woocommerce", middleware.RequireWooCommerceHMAC(wooSecret), webhookHandler.HandleWooCommerce)
+		slog.Info("WooCommerce webhook route active")
+	}
+
+	if magentoSecret != "" {
+		webhookGroup.Post("/magento", middleware.RequireMagentoAuth(magentoSecret), webhookHandler.HandleMagento)
+		slog.Info("Magento webhook route active")
+	}
 	// DOOR A: Private Enterprise
 	app.Post("/v1/trust",
 		middleware.RequireAPIKey(postgresClient, redisClient),
