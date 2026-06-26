@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"time"
@@ -166,7 +167,8 @@ func RequireMagentoAuth(secretToken string) fiber.Handler {
 		authHeader := c.Get("Authorization")
 		expectedHeader := "Bearer " + secretToken
 
-		if authHeader != expectedHeader {
+		// FIX 1: Prevent timing attacks using ConstantTimeCompare
+		if subtle.ConstantTimeCompare([]byte(authHeader), []byte(expectedHeader)) != 1 {
 			slog.Warn("magento webhook unauthorized", "ip", c.IP())
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
 				"success": false,

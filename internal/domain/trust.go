@@ -20,6 +20,8 @@ type TrustResponse struct {
 	Action    string `json:"action"`
 
 	// --- Dynamic Risk Pricing ---
+	// NOTE: These fields are V1.1 (Populated by the Python AI Scorer). 
+	// They will default to 0/false until the AI rules engine is fully active.
 	DeliveryFee     int  `json:"delivery_fee"`     
 	DiscountPercent int  `json:"discount_percent"` 
 	IsVIP           bool `json:"is_vip"`           
