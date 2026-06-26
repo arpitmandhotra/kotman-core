@@ -2,15 +2,16 @@ package handlers
 
 import (
 	"log/slog"
+	"time"
 
 	"github.com/arpitmandhotra/api-integrator/internal/crypto"
+	"github.com/arpitmandhotra/api-integrator/internal/domain"
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
 )
 
-// WebhookHandler acts as the Omni-Channel Adapter for multiple platforms
 type WebhookHandler struct {
-	pg *gorm.DB // We inject Postgres directly for high-speed metric updates
+	pg *gorm.DB 
 }
 
 func NewWebhookHandler(pgDB *gorm.DB) *WebhookHandler {
@@ -21,7 +22,6 @@ func NewWebhookHandler(pgDB *gorm.DB) *WebhookHandler {
 // 1. SHOPIFY ADAPTER
 // ==========================================
 func (h *WebhookHandler) HandleShopify(c *fiber.Ctx) error {
-	// Shopify sends the event type in this header (e.g., "orders/create", "orders/fulfilled")
 	topic := c.Get("X-Shopify-Topic") 
 
 	var payload struct {
@@ -32,25 +32,26 @@ func (h *WebhookHandler) HandleShopify(c *fiber.Ctx) error {
 
 	if err := c.BodyParser(&payload); err != nil {
 		slog.Error("shopify webhook invalid json", "error", err)
-		return c.SendStatus(fiber.StatusOK) // ALWAYS return 200 to prevent infinite Shopify retries
+		return c.SendStatus(fiber.StatusOK) 
 	}
 
 	if payload.Customer.Phone == "" {
-		return c.SendStatus(fiber.StatusOK) // Ignore checkouts where the user didn't leave a phone number
+		return c.SendStatus(fiber.StatusOK) 
 	}
 
-	// Hash AFTER parsing
 	phoneHash := crypto.HashPhone(payload.Customer.Phone)
 
-	// Route the event to the correct AI metric
-	switch topic {
-	case "orders/create":
-		h.incrementMetric(phoneHash, "total_orders")
-	case "orders/fulfilled":
-		h.incrementMetric(phoneHash, "successful_deliveries")
-	case "orders/cancelled", "refunds/create":
-		h.incrementMetric(phoneHash, "total_rtos")
-	}
+	// Offload synchronous DB execution to a background goroutine
+	go func(topic, hash string) {
+		switch topic {
+		case "orders/create":
+			h.incrementMetric(hash, "total_orders")
+		case "orders/fulfilled":
+			h.incrementMetric(hash, "successful_deliveries")
+		case "orders/cancelled", "refunds/create":
+			h.incrementMetric(hash, "total_rtos")
+		}
+	}(topic, phoneHash)
 
 	return c.SendStatus(fiber.StatusOK)
 }
@@ -59,8 +60,7 @@ func (h *WebhookHandler) HandleShopify(c *fiber.Ctx) error {
 // 2. WOOCOMMERCE ADAPTER
 // ==========================================
 func (h *WebhookHandler) HandleWooCommerce(c *fiber.Ctx) error {
-	// WooCommerce uses a different header and JSON structure
-	topic := c.Get("X-WC-Webhook-Topic") // e.g., "order.created", "order.completed"
+	topic := c.Get("X-WC-Webhook-Topic") 
 
 	var payload struct {
 		Billing struct {
@@ -78,14 +78,17 @@ func (h *WebhookHandler) HandleWooCommerce(c *fiber.Ctx) error {
 
 	phoneHash := crypto.HashPhone(payload.Billing.Phone)
 
-	switch topic {
-	case "order.created":
-		h.incrementMetric(phoneHash, "total_orders")
-	case "order.completed":
-		h.incrementMetric(phoneHash, "successful_deliveries")
-	case "order.refunded", "order.cancelled":
-		h.incrementMetric(phoneHash, "total_rtos")
-	}
+	// Offload synchronous DB execution to a background goroutine
+	go func(topic, hash string) {
+		switch topic {
+		case "order.created":
+			h.incrementMetric(hash, "total_orders")
+		case "order.completed":
+			h.incrementMetric(hash, "successful_deliveries")
+		case "order.refunded", "order.cancelled":
+			h.incrementMetric(hash, "total_rtos")
+		}
+	}(topic, phoneHash)
 
 	return c.SendStatus(fiber.StatusOK)
 }
@@ -94,7 +97,6 @@ func (h *WebhookHandler) HandleWooCommerce(c *fiber.Ctx) error {
 // 3. MAGENTO ADAPTER
 // ==========================================
 func (h *WebhookHandler) HandleMagento(c *fiber.Ctx) error {
-	// Magento extensions often send the event type in a custom header or inside the body
 	eventTopic := c.Get("X-Magento-Event") 
 
 	var payload struct {
@@ -117,28 +119,133 @@ func (h *WebhookHandler) HandleMagento(c *fiber.Ctx) error {
 
 	phoneHash := crypto.HashPhone(phone)
 
-	// Map Magento statuses to our AI metrics
-	switch eventTopic {
-	case "sales_order_save_after":
-		if payload.Order.Status == "pending" {
-			h.incrementMetric(phoneHash, "total_orders")
-		} else if payload.Order.Status == "complete" {
-			h.incrementMetric(phoneHash, "successful_deliveries")
-		} else if payload.Order.Status == "canceled" || payload.Order.Status == "closed" {
-			h.incrementMetric(phoneHash, "total_rtos")
+	// Offload synchronous DB execution to a background goroutine
+	go func(topic, status, hash string) {
+		switch topic {
+		case "sales_order_save_after":
+			if status == "pending" {
+				h.incrementMetric(hash, "total_orders")
+			} else if status == "complete" {
+				h.incrementMetric(hash, "successful_deliveries")
+			} else if status == "canceled" || status == "closed" {
+				h.incrementMetric(hash, "total_rtos")
+			}
 		}
-	}
+	}(eventTopic, payload.Order.Status, phoneHash)
 
 	return c.SendStatus(fiber.StatusOK)
 }
 
 // ==========================================
-// THE CORE AI ENGINE UPDATER (Universal Funnel)
+// 4. INTENT-WEIGHTED FEEDBACK INGESTION
+// ==========================================
+func (h *WebhookHandler) HandleProductReview(c *fiber.Ctx) error {
+	var payload struct {
+		Customer struct {
+			Phone string `json:"phone"`
+		} `json:"customer"`
+		OrderID  string  `json:"order_id"`
+		SKU      string  `json:"sku"`
+		Rating   float64 `json:"rating"` 
+		Body     string  `json:"body"`
+		Category string  `json:"category"` 
+	}
+
+	if err := c.BodyParser(&payload); err != nil {
+		slog.Error("failed parsing inbound review packet", "error", err)
+		return c.SendStatus(fiber.StatusOK)
+	}
+
+	if payload.Customer.Phone == "" {
+		return c.SendStatus(fiber.StatusOK)
+	}
+
+	phoneHash := crypto.HashPhone(payload.Customer.Phone)
+	
+	merchantID, ok := c.Locals("merchant_id").(string)
+	if !ok {
+		slog.Error("failed extraction of validated merchant context")
+		return c.SendStatus(fiber.StatusOK)
+	}
+
+	sentiment := 0.0
+	if payload.Rating <= 2 {
+		sentiment = -1.0
+	} else if payload.Rating == 3 {
+		sentiment = 0.0
+	} else {
+		sentiment = 1.0
+	}
+
+	// Hand execution off to background goroutine and return 200 OK instantly
+	go h.processFeedback(phoneHash, merchantID, payload.OrderID, payload.SKU, payload.Category, sentiment)
+
+	return c.SendStatus(fiber.StatusOK)
+}
+
+func (h *WebhookHandler) processFeedback(phoneHash, merchantID, orderID, sku, category string, sentiment float64) {
+	now := time.Now()
+	
+	feedback := domain.CustomerFeedback{
+		PhoneHash:  phoneHash,
+		MerchantID: merchantID,
+		OrderID:    orderID,
+		Category:   category,
+		Sentiment:  sentiment,
+		SKU:        sku,
+		ReceivedAt: now,
+	}
+
+	if err := h.pg.Create(&feedback).Error; err != nil {
+		slog.Error("failed recording raw customer feedback record", "error", err)
+		return
+	}
+
+	var profile domain.TrustProfile
+	err := h.pg.FirstOrCreate(&profile, domain.TrustProfile{PhoneHash: phoneHash}).Error
+	if err != nil {
+		slog.Error("unable to resolve user trust record tracking target", "error", err)
+		return
+	}
+
+	weightData, exists := domain.FeedbackWeights[category]
+	if !exists {
+		weightData = domain.FeedbackWeight{BuyerRiskDelta: -1.0, MerchantSignal: false, ProductSignal: false} 
+	}
+
+	// Update running stats
+	profile.ComplaintCount += 1
+	profile.LastComplaintAt = &now
+	
+	// Apply the risk delta adjustment directly to the profile for the AI scorer
+	profile.RiskAdjustment += weightData.BuyerRiskDelta
+
+	// This performs the Welford incremental mean calculation update correctly.
+	profile.ComplaintScore = profile.ComplaintScore + ((sentiment - profile.ComplaintScore) / float64(profile.ComplaintCount))
+
+	if err := h.pg.Save(&profile).Error; err != nil {
+		slog.Error("failed updates to composite merchant behavior profiling metrics", "error", err)
+	}
+	
+	slog.Info("successfully processed intent-weighted customer feedback event", "hash", phoneHash[:8], "delta", weightData.BuyerRiskDelta)
+}
+
+// ==========================================
+// CORE METRIC ENGINE
 // ==========================================
 func (h *WebhookHandler) incrementMetric(phoneHash string, columnName string) {
-	// This uses GORM's raw SQL execution for an "Atomic Upsert".
-	// If the buyer doesn't exist yet, it creates them. 
-	// If they do exist, it securely adds +1 to the correct column.
+	// SQL Injection Prevention Allowlist
+	allowed := map[string]bool{
+		"total_orders":          true,
+		"successful_deliveries": true,
+		"total_rtos":            true,
+		"total_cancellations":   true,
+	}
+	if !allowed[columnName] {
+		slog.Error("blocked invalid column name execution", "column", columnName)
+		return
+	}
+
 	query := `
 		INSERT INTO trust_profiles (phone_hash, ` + columnName + `, created_at, updated_at) 
 		VALUES (?, 1, NOW(), NOW()) 

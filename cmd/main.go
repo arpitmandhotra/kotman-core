@@ -2,135 +2,127 @@ package main
 
 import (
 	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
-     "log/slog"
-	"github.com/gofiber/fiber/v2"
-    "github.com/arpitmandhotra/api-integrator/internal/logger"
-	// Ensure your database package is imported here!
-	"github.com/gofiber/fiber/v2/middleware/cors"
+
 	"github.com/arpitmandhotra/api-integrator/internal/database"
 	"github.com/arpitmandhotra/api-integrator/internal/domain"
 	"github.com/arpitmandhotra/api-integrator/internal/handlers"
+	"github.com/arpitmandhotra/api-integrator/internal/logger"
 	"github.com/arpitmandhotra/api-integrator/internal/middleware"
 	"github.com/arpitmandhotra/api-integrator/internal/service"
+	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/cors"
 )
 
 func main() {
-
-
 	// ==========================================
 	// 1. THE DATABASE LAYER
 	// ==========================================
 	redisClient := database.NewRedisClient()
 	postgresClient := database.NewPostgresClient()
 
-	postgresClient.AutoMigrate(&domain.Merchant{})
 	merchantKey := os.Getenv("MERCHANT_API_KEY")
 	if merchantKey == "" {
 		log.Fatal("Merchant Key's environment variable is not set")
 	}
+	
+	// Secrets for our Webhook Doors
 	shopifySecret := os.Getenv("SHOPIFY_API_SECRET")
 	if shopifySecret == "" {
 		log.Fatal("CRITICAL: SHOPIFY_API_SECRET environment variable is not set")
 	}
+	wooSecret := os.Getenv("WOOCOMMERCE_WEBHOOK_SECRET")
+	magentoSecret := os.Getenv("MAGENTO_WEBHOOK_SECRET")
+
 	postgresClient.FirstOrCreate(&domain.Merchant{
 		StoreName: "Arpit's Test Store",
 		APIKey:    merchantKey,
 	}, domain.Merchant{APIKey: merchantKey})
 
-	log := logger.New()
-	slog.SetDefault(log) 
+	customLog := logger.New()
+	slog.SetDefault(customLog)
 
 	slog.Info("starting RTO Intelligence API", "port", 3000)
+
 	// ==========================================
 	// 2. THE SERVICE & HANDLER LAYER
 	// ==========================================
 	trustSvc := service.NewRedisTrustService(redisClient, postgresClient)
 	trustHandler := handlers.NewTrustHandler(trustSvc)
-  adminHandler := handlers.NewAdminHandler(postgresClient)
+	adminHandler := handlers.NewAdminHandler(postgresClient)
 	webhookHandler := handlers.NewWebhookHandler(postgresClient)
 
 	// ==========================================
 	// 3. THE ROUTER & MIDDLEWARE LAYER
 	// ==========================================
 	app := fiber.New()
-	// 1. The CORS Bridge (Must be FIRST)
-    // This tells browser: "Yes, we accept traffic from Shopify frontends, and we expect an API key."
-    app.Use(cors.New(cors.Config{
-        AllowOrigins: "*", // For local testing. For production, change to "https://your-client.myshopify.com"
-        AllowHeaders: "Origin, Content-Type, Accept, X-API-Key",
-        AllowMethods: "GET, POST, OPTIONS",
-    }))
+	
+	allowedOrigins := os.Getenv("CORS_ALLOWED_ORIGINS")
+	if allowedOrigins == "" {
+		allowedOrigins = "http://localhost:3000"
+	}
 
-	// --> THE SHIELD WALL <--
-	 // 1. Log traffic
-app.Use(middleware.RequestLogger(log))
-	
-	
+	app.Use(cors.New(cors.Config{
+		AllowOrigins: allowedOrigins,
+		AllowHeaders: "Origin, Content-Type, Accept, X-API-Key",
+		AllowMethods: "GET, POST, OPTIONS",
+	}))
+
+	app.Use(middleware.RequestLogger(customLog))
 
 	// ==========================================
 	// 4. THE ROUTES
 	// ==========================================
 
-	// DOOR B: The Omni-Channel Webhook Listeners (Uses Cryptography - NO RATE LIMIT NEEDED YET)
+	// DOOR B: The Omni-Channel Webhook Listeners
 	webhookGroup := app.Group("/v1/webhooks")
-	// Shopify handles its own retries beautifully, so we let their webhooks flow freely for now.
-
-	// Shopify's Door 
+	
+	// NEW: All 4 of our webhook doors are now wired up securely!
 	webhookGroup.Post("/shopify", middleware.RequireShopifyHMAC(shopifySecret), webhookHandler.HandleShopify)
+	webhookGroup.Post("/woocommerce", middleware.RequireWooCommerceHMAC(wooSecret), webhookHandler.HandleWooCommerce)
+	webhookGroup.Post("/magento", middleware.RequireMagentoAuth(magentoSecret), webhookHandler.HandleMagento)
+	webhookGroup.Post("/shopify/review", middleware.RequireShopifyHMAC(shopifySecret), webhookHandler.HandleProductReview)
 
-	// DOOR A: Private Enterprise (Uses Database API Keys + Distributed Redis Limiting)
+	// DOOR A: Private Enterprise
 	app.Post("/v1/trust",
-		middleware.RequireAPIKey(postgresClient,redisClient), // 1. Check ID & open the backpack
-		middleware.RequireRateLimit(redisClient), // 2. Check Upstash ZSET for Sliding Window limit
-		trustHandler.HandleTrustScore,            // 3. Run the Core Engine math
+		middleware.RequireAPIKey(postgresClient, redisClient),
+		middleware.RequireRateLimit(redisClient),
+		trustHandler.HandleTrustScore,
 	)
-// ==========================================
-	// DOOR C: Private Admin Backdoor (Uses Master Key)
-	// ==========================================
-	app.Post("/v1/internal/onboard", adminHandler.OnboardMerchant)
+
+	// DOOR C: Private Admin Backdoor 
 	adminGroup := app.Group("/v1/admin")
-    
-    // 1. Place YOUR advanced bouncer at the entrance of the hallway
-    // We pass your exact variable names: postgresClient and redisClient
-    adminGroup.Use(middleware.RequireAPIKey(postgresClient, redisClient)) 
-    
-    // 2. Add your secure routes behind the bouncer
-    // Your existing unblock route
-    adminGroup.Post("/unblock", adminHandler.GetRecentBlocks)
+	adminGroup.Use(middleware.RequireAdminKey())
 
-    // THE NEW VAULT DOOR: Your CSV Handler
-    adminGroup.Post("/import-csv", adminHandler.ImportBadActorsCSV)
+	adminGroup.Post("/onboard", adminHandler.OnboardMerchant)
+	adminGroup.Post("/unblock", adminHandler.GetRecentBlocks)
+	adminGroup.Post("/import-csv", adminHandler.ImportBadActorsCSV)
 
-    // 3. Public Health Check (Untouched - this code is perfect)
-    app.Get("/health", func(c *fiber.Ctx) error {
-        // ping Redis
-        _, redisErr := redisClient.Ping(c.UserContext()).Result()
-        // ping Postgres
-        sqlDB, _ := postgresClient.DB()
-        postgresErr := sqlDB.PingContext(c.UserContext())
+	// ==========================================
+	// 5. HEALTH CHECK & START UP
+	// ==========================================
+	app.Get("/health", func(c *fiber.Ctx) error {
+		_, redisErr := redisClient.Ping(c.UserContext()).Result()
+		sqlDB, _ := postgresClient.DB()
+		postgresErr := sqlDB.PingContext(c.UserContext())
 
-        if redisErr != nil || postgresErr != nil {
-            return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
-                "status":   "unhealthy",
-                "redis":    redisErr == nil,
-                "postgres": postgresErr == nil,
-            })
-        }
-        return c.Status(fiber.StatusOK).JSON(fiber.Map{
-            "status": "healthy",
-        })
-    })
-	// Admin Route (We will secure this separately in Sprint 4)
-	// 5. START UP — with graceful shutdown
-	// =========================================
+		if redisErr != nil || postgresErr != nil {
+			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
+				"status":   "unhealthy",
+				"redis":    redisErr == nil,
+				"postgres": postgresErr == nil,
+			})
+		}
+		return c.Status(fiber.StatusOK).JSON(fiber.Map{
+			"status": "healthy",
+		})
+	})
 
-	// Run server in a goroutine so it doesn't block
-	// the signal listener below
-	// Run server in a goroutine so it doesn't block
+	// Run server in a goroutine so it doesn't block the signal listener
 	go func() {
 		slog.Info("Starting RTO Intelligence API on port 3000...")
 		if err := app.Listen(":3000"); err != nil {
@@ -139,16 +131,13 @@ app.Use(middleware.RequestLogger(log))
 		}
 	}()
 
-	// Create a channel to receive OS signals
+	// Graceful Shutdown sequence
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
 
-	// Block here until a signal arrives
 	<-quit
-
 	slog.Info("Shutdown signal received. Draining in-flight requests...")
 
-	// Give active requests up to 30 seconds to complete
 	if err := app.ShutdownWithTimeout(30 * time.Second); err != nil {
 		slog.Error("Forced shutdown after timeout", "error", err)
 		os.Exit(1)
