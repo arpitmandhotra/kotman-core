@@ -3,8 +3,9 @@ package database
 import (
 	"log"
 	"os"
-	"time" // <-- Added for the 5-minute pool timer
+	"time"
 
+	"github.com/arpitmandhotra/api-integrator/internal/domain"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
@@ -31,19 +32,25 @@ func NewPostgresClient() *gorm.DB {
 		log.Fatalf("Failed to get raw DB object for pooling: %v", err)
 	}
 
-	// 1. Cap the absolute maximum number of simultaneous open connections
 	sqlDB.SetMaxOpenConns(25)
-	
-	// 2. Keep 5 connections "warm" and idling when traffic is low
 	sqlDB.SetMaxIdleConns(5)
-	
-	// 3. Force connections to recycle every 5 minutes to prevent memory leaks
 	sqlDB.SetConnMaxLifetime(5 * time.Minute)
+
 	// ==========================================
+	// SCHEMA MIGRATION: Creating the Tables
+	// ==========================================
+	err = db.AutoMigrate(
+		&domain.Merchant{},
+		&domain.TrustProfile{},
+		&domain.CustomerFeedback{}, // The new Intent-Weighted Feedback table!
+	)
+	if err != nil {
+		log.Fatalf("Failed to auto-migrate database schema: %v", err)
+	}
 
 	log.Println("--> Successfully connected to PostgreSQL Cold Storage!")
+	log.Println("--> Database Schema Auto-Migrated Successfully")
 	log.Println("--> Connection Pool Active (Max: 25, Idle: 5)")
-	
 	
 	return db
 }
