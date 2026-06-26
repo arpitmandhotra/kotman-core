@@ -9,6 +9,7 @@ type Merchant struct {
 	StoreName string `gorm:"not null"`
 	APIKey    string `gorm:"uniqueIndex;not null"`
 
+	Platform  string `gorm:"not null;default:'shopify'"`
 	// --- V2 ONBOARDING UPGRADES ---
 	IsActive  bool      `gorm:"default:true"` // Allows us to disable bad merchants
 	

@@ -51,7 +51,7 @@ func main() {
 	trustSvc := service.NewRedisTrustService(redisClient, postgresClient)
 	trustHandler := handlers.NewTrustHandler(trustSvc)
   adminHandler := handlers.NewAdminHandler(postgresClient)
-	webhookHandler := handlers.NewWebhookHandler(trustSvc)
+	webhookHandler := handlers.NewWebhookHandler(postgresClient)
 
 	// ==========================================
 	// 3. THE ROUTER & MIDDLEWARE LAYER
@@ -75,9 +75,12 @@ app.Use(middleware.RequestLogger(log))
 	// 4. THE ROUTES
 	// ==========================================
 
-	// DOOR B: Shopify (Uses Cryptography - NO RATE LIMIT NEEDED YET)
+	// DOOR B: The Omni-Channel Webhook Listeners (Uses Cryptography - NO RATE LIMIT NEEDED YET)
+	webhookGroup := app.Group("/v1/webhooks")
 	// Shopify handles its own retries beautifully, so we let their webhooks flow freely for now.
-	app.Post("/v1/webhooks/shopify/return", middleware.RequireShopifyHMAC(shopifySecret), webhookHandler.HandleOrderReturn)
+
+	// Shopify's Door 
+	webhookGroup.Post("/shopify", middleware.RequireShopifyHMAC(shopifySecret), webhookHandler.HandleShopify)
 
 	// DOOR A: Private Enterprise (Uses Database API Keys + Distributed Redis Limiting)
 	app.Post("/v1/trust",
