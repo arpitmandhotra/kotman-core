@@ -13,8 +13,8 @@ func NewMockTrustService() *MockTrustService {
 	return &MockTrustService{}
 }
 
-// EvaluateRisk strictly satisfies the TrustService interface (including the new IP rule)
-func (s *MockTrustService) EvaluateRisk(ctx context.Context, phoneHash string, ipAddress string) (domain.TrustResponse, error) {
+// EvaluateRisk strictly satisfies the TrustService interface (including the new IP, merchantID, and cartValue parameters)
+func (s *MockTrustService) EvaluateRisk(ctx context.Context, phoneHash string, ipAddress string, merchantID string, cartValue float64) (domain.TrustResponse, error) {
 	// The mock brain always returns a safe score of 85
 	return domain.TrustResponse{
 		PhoneHash: phoneHash,

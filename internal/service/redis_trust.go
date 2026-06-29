@@ -25,8 +25,30 @@ func NewRedisTrustService(client *redis.Client, pgClient *gorm.DB) *RedisTrustSe
 		pg: pgClient}
 }
 
-// EvaluateRisk now accepts the ipAddress to catch bots!
-func (s *RedisTrustService) EvaluateRisk(ctx context.Context, phoneHash string, ipAddress string) (domain.TrustResponse, error) {
+// CalculateFee resolves the transaction fee strictly on the 'cart_value' bounds.
+func CalculateFee(cartValue float64) float64 {
+	switch {
+	case cartValue <= 500:
+		return 5.00
+	case cartValue <= 1000:
+		return 7.50
+	case cartValue <= 2000:
+		return 10.00
+	case cartValue <= 3000:
+		return 20.00
+	case cartValue <= 4000:
+		return 30.00
+	case cartValue <= 5000:
+		return 40.00
+	case cartValue <= 10000:
+		return 50.00
+	default:
+		return 100.00
+	}
+}
+
+// EvaluateRisk now accepts the ipAddress to catch bots, merchantID, and cartValue!
+func (s *RedisTrustService) EvaluateRisk(ctx context.Context, phoneHash string, ipAddress string, merchantID string, cartValue float64) (domain.TrustResponse, error) {
 
 	// ==========================================
 	// HEURISTIC 1: THE VELOCITY BOT CHECK (IP)
@@ -52,6 +74,55 @@ func (s *RedisTrustService) EvaluateRisk(ctx context.Context, phoneHash string, 
 			Score:     10,
 			Action:    "HIDE_COD",
 		}, nil
+	}
+
+	// ==========================================
+	// BILLING: Value-Based Tiered Wallet Deduction
+	// ==========================================
+	fee := CalculateFee(cartValue)
+	var updatedBalance float64
+
+	err = s.pg.Transaction(func(tx *gorm.DB) error {
+		// 1. Balance verification and subtraction
+		// Checks RowsAffected == 0 to prevent race conditions (AGENTS.md rule)
+		result := tx.Model(&domain.MerchantSettings{}).
+			Where("merchant_id = ? AND wallet_balance >= ?", merchantID, fee).
+			Update("wallet_balance", gorm.Expr("wallet_balance - ?", fee))
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return fmt.Errorf("insufficient wallet balance")
+		}
+
+		// 2. Insert into transaction history
+		history := domain.TransactionHistory{
+			MerchantID: merchantID,
+			CartValue:  cartValue,
+			FeeCharged: fee,
+		}
+		if err := tx.Create(&history).Error; err != nil {
+			return err
+		}
+
+		// 3. Load updated balance for Redis cache sync
+		var settings domain.MerchantSettings
+		if err := tx.Where("merchant_id = ?", merchantID).First(&settings).Error; err != nil {
+			return err
+		}
+		updatedBalance = settings.WalletBalance
+		return nil
+	})
+
+	if err != nil {
+		slog.Error("billing deduction failed", "merchant_id", merchantID, "error", err)
+		return domain.TrustResponse{}, fmt.Errorf("billing deduction failed: %w", err)
+	}
+
+	// 4. Redis Cache Sync for local account balance
+	balanceKey := "merchant:balance:" + merchantID
+	if cacheErr := s.db.Set(ctx, balanceKey, fmt.Sprintf("%.2f", updatedBalance), 0).Err(); cacheErr != nil {
+		slog.Error("failed to sync wallet balance to redis cache", "error", cacheErr, "merchant_id", merchantID)
 	}
 
 	// ==========================================

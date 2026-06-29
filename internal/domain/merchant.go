@@ -38,3 +38,11 @@ type MerchantSettings struct {
     CreatedAt time.Time
     UpdatedAt time.Time
 }
+
+type TransactionHistory struct {
+	ID         string    `gorm:"primaryKey;type:uuid;default:gen_random_uuid()"`
+	MerchantID string    `gorm:"index;not null"`
+	CartValue  float64   `gorm:"not null"`
+	FeeCharged float64   `gorm:"not null"`
+	CreatedAt  time.Time
+}

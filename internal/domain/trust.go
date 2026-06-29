@@ -8,9 +8,10 @@ import (
 // TrustRequest represents the payload we expect from the frontend extension/Shopify.
 type TrustRequest struct {
 	// FIX: Replaced PhoneHash with Phone per architectural review
-	Phone     string `json:"phone"`
-	IPAddress string `json:"ip_address"`
-	SessionID string `json:"session_id"`
+	Phone     string  `json:"phone"`
+	IPAddress string  `json:"ip_address"`
+	SessionID string  `json:"session_id"`
+	CartValue float64 `json:"cart_value"`
 }
 
 // TrustResponse is the blueprint for the JSON we send back.
