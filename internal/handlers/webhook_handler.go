@@ -162,7 +162,7 @@ func (h *WebhookHandler) HandleProductReview(c *fiber.Ctx) error {
 
 	phoneHash := crypto.HashPhone(payload.Customer.Phone)
 	
-	merchantID, ok := c.Locals("merchant_id").(string)
+	merchantID, ok := c.Locals("kotman.merchant_id").(string)
 	if !ok {
 		slog.Error("failed extraction of validated merchant context")
 		return c.SendStatus(fiber.StatusOK)
@@ -228,10 +228,19 @@ func (h *WebhookHandler) processFeedback(phoneHash, merchantID, orderID, sku, ca
 		"last_complaint_at": now,
 	}
 
-	if err := h.pg.Model(&profile).Updates(updatePayload).Error; err != nil {
-		slog.Error("failed atomic update to merchant behavior profiling metrics", "error", err)
+	result := h.pg.Model(&profile).Updates(updatePayload)
+	if result.Error != nil {
+		slog.Error("failed atomic update to merchant behavior profiling metrics", "error", result.Error)
+		return
 	}
-	
+	if result.RowsAffected == 0 {
+		slog.Error("feedback profile update affected zero rows — risk adjustment lost",
+			"hash", phoneHash[:8],
+			"profile_id", profile.ID,
+		)
+		return
+	}
+
 	slog.Info("successfully processed intent-weighted customer feedback event", "hash", phoneHash[:8], "delta", weightData.BuyerRiskDelta)
 }
 
@@ -258,7 +267,15 @@ func (h *WebhookHandler) incrementMetric(phoneHash string, columnName string) {
 		DO UPDATE SET ` + columnName + ` = trust_profiles.` + columnName + ` + 1, updated_at = NOW();
 	`
 	
-	if err := h.pg.Exec(query, phoneHash).Error; err != nil {
-		slog.Error("failed to update ai metrics", "error", err, "hash", phoneHash[:8])
+	result := h.pg.Exec(query, phoneHash)
+	if result.Error != nil {
+		slog.Error("failed to update ai metrics", "error", result.Error, "hash", phoneHash[:8])
+		return
+	}
+	if result.RowsAffected == 0 {
+		slog.Error("metric upsert affected zero rows — possible race condition",
+			"hash", phoneHash[:8],
+			"column", columnName,
+		)
 	}
 }

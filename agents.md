@@ -1,0 +1,21 @@
+# AGENTS.md — Core Rules
+
+## Non-Negotiable Security Rules
+- Phone numbers are NEVER stored raw. Always hash via internal/crypto.
+- PII masking format: rawPhone[:4] + "****" + rawPhone[len(rawPhone)-2:]. MUST include length guard (len > 8) before slicing.
+- API keys must use crypto/rand, never math/rand.
+
+## Database & State Rules (Postgres/Redis)
+- All Postgres updates affecting balances MUST check RowsAffected == 0 to prevent race conditions.
+- Redis caching is for BAD ACTORS ONLY (score ≤ 20). Never cache clean users (score 85).
+- Webhook handlers MUST return 200 OK immediately. All DB/Redis work must happen in goroutines.
+- Goroutine workers processing Redis keyspace events must implement idempotency/deduplication to prevent double-processing.
+
+## Architecture
+- cmd/ → entry points
+- internal/handlers/ → HTTP only, no business logic
+- internal/service/ → all business logic lives here
+- internal/domain/ → structs only, no logic
+## SQL Safety
+- The column name allowlist in incrementMetric must never 
+  be removed. Never interpolate column names from user input.

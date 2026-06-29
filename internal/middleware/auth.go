@@ -54,8 +54,8 @@ func RequireAPIKey(pg *gorm.DB, redisClient *redis.Client) fiber.Handler {
 				}
 
 				// CACHE HIT! Set BOTH backpack variables to keep everything happy
-				c.Locals("merchant", merchant)       // For the Rate Limiter
-				c.Locals("merchant_id", merchant.ID) // For the Trust Handler
+				c.Locals("kotman.merchant", merchant)
+				c.Locals("kotman.merchant_id", merchant.ID)
 				return c.Next()
 			}
 		}
@@ -76,6 +76,16 @@ func RequireAPIKey(pg *gorm.DB, redisClient *redis.Client) fiber.Handler {
 			})
 		}
 
+		// Defense-in-depth: constant-time comparison prevents Go-level timing leak
+		// even though the Postgres index lookup itself is not constant-time.
+		if subtle.ConstantTimeCompare([]byte(apiKey), []byte(merchant.APIKey)) != 1 {
+			slog.Warn("auth key mismatch after db lookup", "ip", c.IP())
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+				"success": false,
+				"error":   "Invalid API Key. Access Denied.",
+			})
+		}
+
 		// ==========================================
 		// CACHE POPULATION: Save for next time
 		// ==========================================
@@ -90,8 +100,8 @@ func RequireAPIKey(pg *gorm.DB, redisClient *redis.Client) fiber.Handler {
 		)
 
 		// Set BOTH backpack variables
-		c.Locals("merchant", merchant)       // For the Rate Limiter
-		c.Locals("merchant_id", merchant.ID) // For the Trust Handler
+		c.Locals("kotman.merchant", merchant)
+		c.Locals("kotman.merchant_id", merchant.ID)
 
 		return c.Next()
 	}

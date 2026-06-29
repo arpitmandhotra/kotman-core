@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"strconv"
 	"time"
@@ -93,13 +94,23 @@ func (s *RedisTrustService) EvaluateRisk(ctx context.Context, phoneHash string, 
 		return 20, nil // 20 = Low Trust
 	})
 
+	// Handle singleflight errors before touching the result value.
+	if err != nil {
+		slog.Error("singleflight lookup failed", "phone_hash", phoneHash[:8]+"...", "error", err)
+		return domain.TrustResponse{}, err
+	}
+
 	// 4. OBSERVABILITY: Did Singleflight save us from a stampede?
 	if shared {
 		slog.Info("singleflight database protected", "phone_hash", phoneHash[:8]+"...")
 	}
 
 	// 5. Build the final response based on what Singleflight returned
-	finalScore := v.(int)
+	finalScore, ok := v.(int)
+	if !ok {
+		slog.Error("unexpected type from singleflight result", "phone_hash", phoneHash[:8]+"...")
+		return domain.TrustResponse{}, fmt.Errorf("internal error: singleflight returned non-int type")
+	}
 	action := "ALLOW_COD"
 	if finalScore <= 20 {
 		action = "HIDE_COD"
