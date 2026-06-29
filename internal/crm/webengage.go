@@ -54,7 +54,7 @@ func (w *WebEngageConnector) SyncRiskEvent(ctx context.Context, event KotmanRisk
         userPayload,
     )
     if err != nil {
-        logCRMResult(w.Name(), event.MerchantID, event.PhoneHash[:8], err)
+        logCRMResult(w.Name(), event.MerchantID, safeHashPreview(event.PhoneHash), err)
         return err
     }
 
@@ -76,7 +76,7 @@ func (w *WebEngageConnector) SyncRiskEvent(ctx context.Context, event KotmanRisk
         eventPayload,
     )
 
-    logCRMResult(w.Name(), event.MerchantID, event.PhoneHash[:8], err)
+    logCRMResult(w.Name(), event.MerchantID, safeHashPreview(event.PhoneHash), err)
     return err
 }
 

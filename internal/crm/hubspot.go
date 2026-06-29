@@ -3,6 +3,7 @@ package crm
 import (
     "context"
     "fmt"
+    "net/url"
 )
 
 // HubSpotConnector upserts a contact in HubSpot with Kotman risk properties
@@ -43,7 +44,7 @@ func (h *HubSpotConnector) SyncRiskEvent(ctx context.Context, event KotmanRiskEv
 
     err := patchJSON(ctx,
         fmt.Sprintf("https://api.hubapi.com/crm/v3/objects/contacts/%s?idProperty=kotman_phone_hash",
-            event.PhoneHash),
+            url.PathEscape(event.PhoneHash)),
         map[string]string{
             "Authorization": "Bearer " + h.apiKey,
         },
@@ -71,6 +72,6 @@ func (h *HubSpotConnector) SyncRiskEvent(ctx context.Context, event KotmanRiskEv
         )
     }
 
-    logCRMResult(h.Name(), event.MerchantID, event.PhoneHash[:8], err)
+    logCRMResult(h.Name(), event.MerchantID, safeHashPreview(event.PhoneHash), err)
     return err
 }

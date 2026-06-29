@@ -90,6 +90,16 @@ func (w *RecoveryWorker) listenAndProcess(ctx context.Context, pubsub *redis.Pub
 //	cart:trigger:<merchant_id>:<phone_hash>
 //	feedback:trigger:<merchant_id>:<phone_hash>:<order_id>
 func (w *RecoveryWorker) handleExpiredKey(ctx context.Context, key string) {
+	// Idempotency lock — prevents duplicate processing when Redis delivers
+	// the same expiry event twice (cluster failovers, network retries,
+	// or multiple worker replicas).
+	lockKey := "lock:" + key
+	ok, err := w.redis.SetNX(ctx, lockKey, "1", 5*time.Minute).Result()
+	if err != nil || !ok {
+		return // another worker/goroutine already processing this event
+	}
+	defer w.redis.Del(ctx, lockKey)
+
 	parts := strings.Split(key, ":")
 	if len(parts) < 4 {
 		return // not our key — ignore silently
@@ -109,7 +119,7 @@ func (w *RecoveryWorker) handleExpiredKey(ctx context.Context, key string) {
 }
 
 func (w *RecoveryWorker) processCartRecovery(ctx context.Context, merchantID, phoneHash string) {
-	slog.Info("processing cart recovery", "merchant_id", merchantID, "hash", phoneHash[:8])
+	slog.Info("processing cart recovery", "merchant_id", merchantID, "hash", safePreview(phoneHash))
 
 	// 1. Load merchant CRM + billing settings
 	settings, err := w.loadSettings(merchantID)
@@ -136,7 +146,7 @@ func (w *RecoveryWorker) processCartRecovery(ctx context.Context, merchantID, ph
 		if profile.TotalRTOs > 2 ||
 			(profile.ComplaintCount > 0 && profile.ComplaintScore < -0.3) {
 			slog.Warn("skipping cart recovery — high risk buyer",
-				"hash", phoneHash[:8],
+				"hash", safePreview(phoneHash),
 				"rto_count", profile.TotalRTOs,
 			)
 			return
@@ -171,7 +181,7 @@ func (w *RecoveryWorker) processCartRecovery(ctx context.Context, merchantID, ph
 }
 
 func (w *RecoveryWorker) processPostPurchaseFeedback(ctx context.Context, merchantID, phoneHash, orderID string) {
-	slog.Info("processing post-purchase feedback", "order_id", orderID, "hash", phoneHash[:8])
+	slog.Info("processing post-purchase feedback", "order_id", orderID, "hash", safePreview(phoneHash))
 
 	settings, err := w.loadSettings(merchantID)
 	if err != nil {
@@ -297,7 +307,7 @@ func (w *RecoveryWorker) executeRouting(
 
 	slog.Warn("all routing tiers exhausted — message dropped",
 		"merchant_id", settings.MerchantID,
-		"hash", phoneHash[:8],
+		"hash", safePreview(phoneHash),
 	)
 }
 
@@ -326,9 +336,11 @@ func (w *RecoveryWorker) loadProfile(phoneHash string) (*domain.TrustProfile, er
 }
 
 func (w *RecoveryWorker) fetchAndDeleteDataKey(ctx context.Context, dataKey string) (string, error) {
-	rawPhone, err := w.redis.Get(ctx, dataKey).Result()
+	// Atomic get-and-delete — prevents two goroutines from both reading
+	// the same raw phone before either deletes it.
+	rawPhone, err := w.redis.GetDel(ctx, dataKey).Result()
 	if err == redis.Nil {
-		slog.Warn("data key missing — trigger fired but data already expired",
+		slog.Warn("data key missing — trigger fired but data already expired or consumed",
 			"key", dataKey)
 		return "", err
 	}
@@ -336,8 +348,6 @@ func (w *RecoveryWorker) fetchAndDeleteDataKey(ctx context.Context, dataKey stri
 		slog.Error("redis error fetching data key", "key", dataKey, "error", err)
 		return "", err
 	}
-	// Delete immediately — PII must not linger in Redis after use
-	w.redis.Del(ctx, dataKey)
 	return rawPhone, nil
 }
 
@@ -389,7 +399,7 @@ func (w *RecoveryWorker) sendWhatsApp(
 		"recipient_masked", masked,
 		"template", template,
 		"incentive_pct", discount,
-		"hash", phoneHash[:8],
+		"hash", safePreview(phoneHash),
 		"provider", providerName,
 	)
 
@@ -414,4 +424,13 @@ func (w *RecoveryWorker) sendWhatsApp(
 	default:
 		slog.Warn("unknown WhatsApp provider — message not sent", "provider", providerName)
 	}
+}
+
+// safePreview returns the first 8 characters of a hash for logging,
+// guarding against panics on short or empty strings.
+func safePreview(hash string) string {
+	if len(hash) < 8 {
+		return hash
+	}
+	return hash[:8]
 }

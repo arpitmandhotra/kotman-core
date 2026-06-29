@@ -5,6 +5,7 @@ import (
     "context"
     "encoding/json"
     "fmt"
+    "io"
     "log/slog"
     "net/http"
     "time"
@@ -31,6 +32,22 @@ type Connector interface {
     // property update + triggers the appropriate automation workflow.
     SyncRiskEvent(ctx context.Context, event KotmanRiskEvent) error
 }
+
+// httpClient is a package-level client shared by all CRM connectors.
+// A single client reuses TCP connections across calls via its Transport pool,
+// preventing connection exhaustion under load.
+var httpClient = &http.Client{
+    Timeout: 10 * time.Second,
+    Transport: &http.Transport{
+        MaxIdleConns:        50,
+        MaxIdleConnsPerHost: 10,
+        IdleConnTimeout:     90 * time.Second,
+    },
+}
+
+// maxResponseBody caps how much of a CRM response body we'll read,
+// preventing allocation bombs from broken or malicious upstream servers.
+const maxResponseBody = 1 << 20 // 1 MB
 
 // NewConnector is the factory — returns the right connector based on provider string.
 func NewConnector(provider, apiKey, accountID string) (Connector, error) {
@@ -71,12 +88,17 @@ func postJSON(ctx context.Context, url string, headers map[string]string, body i
         req.Header.Set(k, v)
     }
 
-    client := &http.Client{Timeout: 10 * time.Second}
-    resp, err := client.Do(req)
+    resp, err := httpClient.Do(req)
     if err != nil {
         return fmt.Errorf("HTTP error: %w", err)
     }
-    defer resp.Body.Close()
+    // Drain and close: reading the body to EOF allows the Transport to reuse
+    // the underlying TCP connection for future requests (HTTP keep-alive).
+    // LimitReader caps memory at maxResponseBody to prevent allocation bombs.
+    defer func() {
+        io.Copy(io.Discard, io.LimitReader(resp.Body, maxResponseBody))
+        resp.Body.Close()
+    }()
 
     if resp.StatusCode >= 400 {
         return fmt.Errorf("CRM rejected request with status %d", resp.StatusCode)
@@ -101,17 +123,28 @@ func patchJSON(ctx context.Context, url string, headers map[string]string, body 
         req.Header.Set(k, v)
     }
 
-    client := &http.Client{Timeout: 10 * time.Second}
-    resp, err := client.Do(req)
+    resp, err := httpClient.Do(req)
     if err != nil {
         return fmt.Errorf("HTTP error: %w", err)
     }
-    defer resp.Body.Close()
+    defer func() {
+        io.Copy(io.Discard, io.LimitReader(resp.Body, maxResponseBody))
+        resp.Body.Close()
+    }()
 
     if resp.StatusCode >= 400 {
         return fmt.Errorf("CRM rejected patch with status %d", resp.StatusCode)
     }
     return nil
+}
+
+// safeHashPreview returns the first 8 characters of a phone hash for logging,
+// guarding against panics when the hash is shorter than 8 characters.
+func safeHashPreview(hash string) string {
+    if len(hash) < 8 {
+        return hash
+    }
+    return hash[:8]
 }
 
 // logCRMResult is shared structured logging for all connector results.
