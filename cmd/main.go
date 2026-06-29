@@ -116,8 +116,14 @@ func main() {
 	// ==========================================
 	app.Get("/health", func(c *fiber.Ctx) error {
 		_, redisErr := redisClient.Ping(c.UserContext()).Result()
-		sqlDB, _ := postgresClient.DB()
-		postgresErr := sqlDB.PingContext(c.UserContext())
+
+		var postgresErr error
+		sqlDB, dbErr := postgresClient.DB()
+		if dbErr != nil {
+			postgresErr = dbErr
+		} else {
+			postgresErr = sqlDB.PingContext(c.UserContext())
+		}
 
 		if redisErr != nil || postgresErr != nil {
 			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
@@ -149,6 +155,19 @@ func main() {
 
 	if err := app.ShutdownWithTimeout(30 * time.Second); err != nil {
 		slog.Error("Forced shutdown after timeout", "error", err)
-		os.Exit(1)
 	}
+
+	// Close Redis connection pool
+	if err := redisClient.Close(); err != nil {
+		slog.Error("failed to close Redis connection", "error", err)
+	}
+
+	// Close Postgres connection pool
+	if sqlDB, err := postgresClient.DB(); err == nil {
+		if err := sqlDB.Close(); err != nil {
+			slog.Error("failed to close Postgres connection pool", "error", err)
+		}
+	}
+
+	slog.Info("All connections closed — shutdown complete")
 }

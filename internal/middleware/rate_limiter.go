@@ -1,11 +1,12 @@
 package middleware
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"time"
-        "context"
-		"math/rand"
+	"context"
 	"github.com/arpitmandhotra/api-integrator/internal/domain"
 	"github.com/gofiber/fiber/v2"
 	"github.com/redis/go-redis/v9"
@@ -13,7 +14,7 @@ import (
 
 func RequireRateLimit(redisClient *redis.Client) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		merchant, ok := c.Locals("merchant").(domain.Merchant)
+		merchant, ok := c.Locals("kotman.merchant").(domain.Merchant)
 		if !ok {
 			return c.Next() // Fail-open
 		}
@@ -32,43 +33,52 @@ func RequireRateLimit(redisClient *redis.Client) fiber.Handler {
 		// ==========================================
 		// FIX 2: Prevent ZAdd Nanosecond Collisions
 		// ==========================================
-		uniqueMember := fmt.Sprintf("%d-%d", now, rand.Int63())
+		randBytes := make([]byte, 8)
+		rand.Read(randBytes)
+		uniqueMember := fmt.Sprintf("%d-%s", now, hex.EncodeToString(randBytes))
 
-		// 3. ATOMIC PIPELINE
-		pipe := redisClient.TxPipeline() 
-		pipe.ZRemRangeByScore(ctx, key, "0", fmt.Sprintf("%d", windowStart))
-		countCmd := pipe.ZCard(ctx, key)
-		
-		// Drop the unique member into the queue
-		pipe.ZAdd(ctx, key, redis.Z{Score: float64(now), Member: uniqueMember})
-		pipe.Expire(ctx, key, 1*time.Minute)
+		// ==========================================
+		// ATOMIC LUA SCRIPT: Eliminates TOCTOU race
+		// Redis executes Lua scripts atomically (single-threaded),
+		// so count is checked AFTER adding the current request.
+		// ==========================================
+		luaScript := redis.NewScript(`
+			redis.call('ZREMRANGEBYSCORE', KEYS[1], '0', ARGV[1])
+			redis.call('ZADD', KEYS[1], ARGV[2], ARGV[3])
+			local count = redis.call('ZCARD', KEYS[1])
+			redis.call('EXPIRE', KEYS[1], 60)
+			return count
+		`)
 
-		// 4. Execute the pipeline
-		if _, err := pipe.Exec(ctx); err != nil {
-		slog.Error("redis pipeline failure", 
-	"error", err, 
-	"ip", c.IP(),
-)
+		result, err := luaScript.Run(ctx, redisClient,
+			[]string{key},                        // KEYS[1]
+			fmt.Sprintf("%d", windowStart),         // ARGV[1]
+			float64(now),                           // ARGV[2]
+			uniqueMember,                           // ARGV[3]
+		).Int64()
+
+		if err != nil {
+			slog.Error("redis rate limit script failure",
+				"error", err,
+				"ip", c.IP(),
+			)
 			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
-        "error": "Security validation temporarily unavailable",
-    })
+				"error": "Security validation temporarily unavailable",
+			})
 		}
 
-		// 5. Evaluate the Limit
-		currentCount := int(countCmd.Val()) // getting the value in redis cache
+		// 5. Evaluate the Limit (count now includes the current request)
+		currentCount := int(result)
 		limit := 10 // Temporary hardcode, will move to config later
 
-		// ==========================================
-		// FIX 1: The Off-By-One Boundary
-		// ==========================================
-		if currentCount >= limit {
+		if currentCount > limit {
 			slog.Warn("rate limit exceeded",
-	"store",       merchant.StoreName,
-	"merchant_id", merchant.ID,
-	"count",       currentCount + 1,
-	"limit",       limit,
-	"ip",          c.IP(),
-)
+				"store",       merchant.StoreName,
+				"merchant_id", merchant.ID,
+				"count",       currentCount,
+				"limit",       limit,
+				"ip",          c.IP(),
+			)
 			return c.Status(fiber.StatusTooManyRequests).JSON(fiber.Map{
 				"success": false,
 				"error":   "Rate limit exceeded. Please slow down.",
@@ -76,11 +86,8 @@ func RequireRateLimit(redisClient *redis.Client) fiber.Handler {
 		}
 
 		// Tell the merchant exactly when their 60-second window resets
-	// ==========================================
-		// FIX 3: Calculate Remaining mathematically
-		// ==========================================
-		// currentCount is what was in the DB before this request, so we subtract (currentCount + 1)
-		remaining := limit - (currentCount + 1)
+		// currentCount already includes the current request (Lua adds before counting)
+		remaining := limit - currentCount
 		if remaining < 0 {
 			remaining = 0
 		}

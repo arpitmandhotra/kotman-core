@@ -66,7 +66,12 @@ func (h *AdminHandler) ImportBadActorsCSV(c *fiber.Ctx) error {
 	totalSkipped := 0
 
 	// Get the merchant ID from the context (set by your RequireAdminKey auth middleware)
-	merchantID, _ := c.Locals("merchant_id").(string)
+	merchantID, ok := c.Locals("kotman.merchant_id").(string)
+	if !ok || merchantID == "" {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+			"error": "missing or invalid merchant context",
+		})
+	}
 
 	// 5. Stream the rows continuously
 	for {

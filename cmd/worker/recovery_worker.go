@@ -381,7 +381,7 @@ func (w *RecoveryWorker) sendWhatsApp(
 ) {
 	// Mask phone — never log raw PII
 	masked := "91**********"
-	if len(rawPhone) > 6 {
+	if len(rawPhone) > 8 {
 		masked = rawPhone[:4] + "****" + rawPhone[len(rawPhone)-2:]
 	}
 

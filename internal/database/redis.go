@@ -28,6 +28,10 @@ func NewRedisClient() *redis.Client {
 		}
 	}
 
+	// Explicit pool limits — prevent host-dependent defaults (go-redis defaults to 10×NumCPU)
+	opt.PoolSize = 20
+	opt.MinIdleConns = 5
+
 	client := redis.NewClient(opt)
 
 	_, err = client.Ping(context.Background()).Result()

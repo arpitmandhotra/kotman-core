@@ -18,7 +18,7 @@ func RequestLogger(log *slog.Logger) fiber.Handler {
             "status",      c.Response().StatusCode(),
             "ip",          c.IP(),
             "latency_ms",  time.Since(start).Milliseconds(),
-            "merchant_id", c.Locals("merchant_id"),
+            "merchant_id", c.Locals("kotman.merchant_id"),
         )
 
         return err
