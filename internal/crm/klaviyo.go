@@ -74,7 +74,7 @@ func (k *KlaviyoConnector) SyncRiskEvent(ctx context.Context, event KotmanRiskEv
         payload,
     )
 
-    logCRMResult(k.Name(), event.MerchantID, event.PhoneHash[:8], err)
+    logCRMResult(k.Name(), event.MerchantID, safeHashPreview(event.PhoneHash), err)
     return err
 }
 

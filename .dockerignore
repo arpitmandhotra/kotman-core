@@ -1,0 +1,27 @@
+# Exclude secrets and env files from Docker build context.
+# This prevents .env from being copied into image layers
+# during the builder stage's "COPY . ." instruction.
+.env
+.env.*
+
+# Git and IDE metadata
+.git
+.gitignore
+.vscode/
+.idea/
+
+# Agents config
+.agents/
+AGENTS.md
+
+# Documentation and non-runtime files
+README.md
+*.md
+LICENSE
+
+# Test files
+*_test.go
+
+# OS files
+.DS_Store
+Thumbs.db

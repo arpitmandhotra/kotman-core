@@ -19,9 +19,19 @@ func main() {
 		log.Fatalf("❌ Failed to migrate Merchant: %v", err)
 	}
 
-	log.Println("📦 Syncing domain.BadActorRecord schema...")
+	log.Println("📦 Syncing domain.MerchantSettings schema...")
+	if err := db.AutoMigrate(&domain.MerchantSettings{}); err != nil {
+		log.Fatalf("❌ Failed to migrate MerchantSettings: %v", err)
+	}
+
+	log.Println("📦 Syncing domain.TrustProfile schema...")
 	if err := db.AutoMigrate(&domain.TrustProfile{}); err != nil {
-		log.Fatalf("❌ Failed to migrate BadActorRecord: %v", err)
+		log.Fatalf("❌ Failed to migrate TrustProfile: %v", err)
+	}
+
+	log.Println("📦 Syncing domain.CustomerFeedback schema...")
+	if err := db.AutoMigrate(&domain.CustomerFeedback{}); err != nil {
+		log.Fatalf("❌ Failed to migrate CustomerFeedback: %v", err)
 	}
 
 	log.Println("✅ Database schema perfectly synchronized. Safe to deploy.")

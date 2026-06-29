@@ -58,7 +58,7 @@ func (m *MoEngageConnector) SyncRiskEvent(ctx context.Context, event KotmanRiskE
         userPayload,
     )
     if err != nil {
-        logCRMResult(m.Name(), event.MerchantID, event.PhoneHash[:8], err)
+        logCRMResult(m.Name(), event.MerchantID, safeHashPreview(event.PhoneHash), err)
         return err
     }
 
@@ -90,7 +90,7 @@ func (m *MoEngageConnector) SyncRiskEvent(ctx context.Context, event KotmanRiskE
         eventPayload,
     )
 
-    logCRMResult(m.Name(), event.MerchantID, event.PhoneHash[:8], err)
+    logCRMResult(m.Name(), event.MerchantID, safeHashPreview(event.PhoneHash), err)
     return err
 }
 

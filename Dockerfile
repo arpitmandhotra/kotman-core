@@ -15,11 +15,21 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o kotman-engine ./cmd/main.go
 # ==========================================
 # STAGE 2: THE PRODUCTION RUNNER
 # ==========================================
-FROM alpine:latest
-RUN apk add --no-cache tzdata
-WORKDIR /root/
+FROM alpine:3.21
 
-COPY --from=builder /app/kotman-engine .
+RUN apk add --no-cache tzdata
+
+# Create a non-root user with a fixed UID/GID.
+# The binary runs as this user — if compromised, the attacker
+# cannot escalate to root or modify system files.
+RUN addgroup -g 1001 -S kotman && \
+    adduser -u 1001 -S kotman -G kotman
+
+WORKDIR /home/kotman
+
+COPY --from=builder --chown=kotman:kotman /app/kotman-engine .
+
+USER kotman
 
 EXPOSE 3000
 

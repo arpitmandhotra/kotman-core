@@ -38,6 +38,12 @@ func main() {
 	wooSecret := os.Getenv("WOOCOMMERCE_WEBHOOK_SECRET")
 	magentoSecret := os.Getenv("MAGENTO_WEBHOOK_SECRET")
 
+	// Validate HASH_PEPPER at startup — prevents silently filling the DB
+	// with weak hashes for hours until the first trust check triggers the warning.
+	if os.Getenv("HASH_PEPPER") == "" {
+		log.Fatal("CRITICAL: HASH_PEPPER environment variable is not set — phone hashes are reversible without a pepper")
+	}
+
 	postgresClient.FirstOrCreate(&domain.Merchant{
 		StoreName: "Arpit's Test Store",
 		APIKey:    merchantKey,
