@@ -34,5 +34,10 @@ func main() {
 		log.Fatalf("❌ Failed to migrate CustomerFeedback: %v", err)
 	}
 
+	log.Println("📦 Syncing domain.TransactionHistory schema...")
+	if err := db.AutoMigrate(&domain.TransactionHistory{}); err != nil {
+		log.Fatalf("❌ Failed to migrate TransactionHistory: %v", err)
+	}
+
 	log.Println("✅ Database schema perfectly synchronized. Safe to deploy.")
 }

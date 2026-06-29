@@ -16,11 +16,12 @@ func NewTrustHandler(trustSvc service.TrustService) *TrustHandler {
 }
 
 func (h *TrustHandler) HandleTrustScore(c *fiber.Ctx) error {
-	// 1. Expand the struct to catch the IP Address from Postman
+	// 1. Expand the struct to catch the IP Address from Postman and cart value
 	type TrustScoreRequest struct {
-		Phone	 string `json:"phone"`
-		IPAddress string `json:"ip_address"` // NEW
-		SessionID string `json:"session_id"`
+		Phone     string  `json:"phone"`
+		IPAddress string  `json:"ip_address"` // NEW
+		SessionID string  `json:"session_id"`
+		CartValue float64 `json:"cart_value"`
 	}
 
 	var req TrustScoreRequest
@@ -28,13 +29,19 @@ func (h *TrustHandler) HandleTrustScore(c *fiber.Ctx) error {
 		log.Println("Error parsing JSON:", err)
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid request body"})
 	}
-    phoneHash:=crypto.HashPhone(req.Phone)
+
+	merchantID, ok := c.Locals("kotman.merchant_id").(string)
+	if !ok || merchantID == "" {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Missing or invalid merchant context"})
+	}
+
+	phoneHash := crypto.HashPhone(req.Phone)
 	ctx := c.UserContext()
 
-	// 2. Pass BOTH the phone hash and the IP Address into the brain
-	resp, err := h.trustService.EvaluateRisk(ctx, phoneHash, req.IPAddress)
+	// 2. Pass phone hash, IP Address, merchant ID, and cart value into the service
+	resp, err := h.trustService.EvaluateRisk(ctx, phoneHash, req.IPAddress, merchantID, req.CartValue)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to evaluate risk"})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 
 	return c.JSON(resp)

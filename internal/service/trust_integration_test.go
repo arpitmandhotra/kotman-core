@@ -92,8 +92,31 @@ func TestEvaluateRisk_Integration(t *testing.T) {
 	}
 
 	// Run migrations on the test database
-	if err := pgDB.AutoMigrate(&domain.TrustProfile{}); err != nil {
+	if err := pgDB.AutoMigrate(
+		&domain.TrustProfile{},
+		&domain.Merchant{},
+		&domain.MerchantSettings{},
+		&domain.TransactionHistory{},
+	); err != nil {
 		t.Fatalf("failed to migrate test database: %s", err)
+	}
+
+	// Create test merchant and settings
+	testMerchantID := "test-merchant-123"
+	if err := pgDB.Create(&domain.Merchant{
+		ID:        testMerchantID,
+		StoreName: "Test Integration Store",
+		APIKey:    "test_key_123",
+		IsActive:  true,
+	}).Error; err != nil {
+		t.Fatalf("failed to seed test merchant: %s", err)
+	}
+
+	if err := pgDB.Create(&domain.MerchantSettings{
+		MerchantID:    testMerchantID,
+		WalletBalance: 1000.0,
+	}).Error; err != nil {
+		t.Fatalf("failed to seed test merchant settings: %s", err)
 	}
 
 	// Build the real service
@@ -104,7 +127,7 @@ func TestEvaluateRisk_Integration(t *testing.T) {
 	// ==========================================
 
 	t.Run("CleanUser_ReturnsAllow", func(t *testing.T) {
-		resp, err := svc.EvaluateRisk(ctx, "unknown_hash_abc123", "1.2.3.4")
+		resp, err := svc.EvaluateRisk(ctx, "unknown_hash_abc123", "1.2.3.4", testMerchantID, 150.0)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -127,7 +150,7 @@ func TestEvaluateRisk_Integration(t *testing.T) {
 			LockedAt:        &now,                    // Pass the pointer
 		})
 
-		resp, err := svc.EvaluateRisk(ctx, badHash, "1.2.3.5")
+		resp, err := svc.EvaluateRisk(ctx, badHash, "1.2.3.5", testMerchantID, 150.0)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -152,7 +175,7 @@ func TestEvaluateRisk_Integration(t *testing.T) {
 		cachedHash := "cached_bad_actor"
 		redisClient.Set(ctx, cachedHash, "20", 24*time.Hour)
 
-		resp, err := svc.EvaluateRisk(ctx, cachedHash, "1.2.3.6")
+		resp, err := svc.EvaluateRisk(ctx, cachedHash, "1.2.3.6", testMerchantID, 150.0)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -166,10 +189,10 @@ func TestEvaluateRisk_Integration(t *testing.T) {
 		botHash := "velocity_test_hash"
 
 		for i := 0; i < 4; i++ {
-			svc.EvaluateRisk(ctx, botHash, botIP)
+			svc.EvaluateRisk(ctx, botHash, botIP, testMerchantID, 150.0)
 		}
 
-		resp, err := svc.EvaluateRisk(ctx, botHash, botIP)
+		resp, err := svc.EvaluateRisk(ctx, botHash, botIP, testMerchantID, 150.0)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
