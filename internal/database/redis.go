@@ -22,7 +22,7 @@ func NewRedisClient() *redis.Client {
 	} else {
 		// Local: Fallback to your exact Docker configuration
 		opt = &redis.Options{
-			Addr:     "host.docker.internal:6379",
+			Addr:     "127.0.0.1:6379",
 			Password: "",
 			DB:       0,
 		}

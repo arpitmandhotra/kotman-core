@@ -42,9 +42,9 @@ type TrustProfile struct {
 	// --- IMMUTABLE HISTORICAL FACTS (The AI's Diet) ---
 	TotalOrders          int     `gorm:"default:0"`
 	SuccessfulDeliveries int     `gorm:"default:0"`
-	TotalRTOs            int     `gorm:"default:0"`
+	TotalRTOs            int     `gorm:"column:total_rtos;default:0"`
 	TotalCancellations   int     `gorm:"default:0"`
-	TotalRevenueSpent    float64 `gorm:"default:0"`
+	TotalRevenueSpent    int     `gorm:"default:0"`
 	LastActivityDate     *time.Time
 
 	// --- INTENT-WEIGHTED FEEDBACK ---
@@ -102,7 +102,7 @@ func (p *TrustProfile) GenerateAIFeatures(currentOrderValue float64) map[string]
 
 	avgOrderValue := 0.0
 	if p.SuccessfulDeliveries > 0 {
-		avgOrderValue = p.TotalRevenueSpent / float64(p.SuccessfulDeliveries)
+		avgOrderValue = (float64(p.TotalRevenueSpent) / 100.0) / float64(p.SuccessfulDeliveries)
 	}
 
 	orderValueRatio := 1.0

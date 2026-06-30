@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/arpitmandhotra/api-integrator/internal/crypto"
+	"github.com/arpitmandhotra/api-integrator/internal/database"
 	"github.com/arpitmandhotra/api-integrator/internal/domain"
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
@@ -248,34 +249,112 @@ func (h *WebhookHandler) processFeedback(phoneHash, merchantID, orderID, sku, ca
 // CORE METRIC ENGINE
 // ==========================================
 func (h *WebhookHandler) incrementMetric(phoneHash string, columnName string) {
-	// SQL Injection Prevention Allowlist
-	allowed := map[string]bool{
-		"total_orders":          true,
-		"successful_deliveries": true,
-		"total_rtos":            true,
-		"total_cancellations":   true,
-	}
-	if !allowed[columnName] {
-		slog.Error("blocked invalid column name execution", "column", columnName)
-		return
+	database.IncrementMetric(h.pg, phoneHash, columnName)
+}
+
+// HandleShopifyUninstall sets the credential to inactive and deactivates the merchant key.
+func (h *WebhookHandler) HandleShopifyUninstall(c *fiber.Ctx) error {
+	shopDomain := c.Get("X-Shopify-Shop-Domain")
+	if shopDomain == "" {
+		var payload struct {
+			Domain string `json:"domain"`
+		}
+		if err := c.BodyParser(&payload); err == nil && payload.Domain != "" {
+			shopDomain = payload.Domain
+		}
 	}
 
-	query := `
-		INSERT INTO trust_profiles (phone_hash, ` + columnName + `, created_at, updated_at) 
-		VALUES (?, 1, NOW(), NOW()) 
-		ON CONFLICT (phone_hash) 
-		DO UPDATE SET ` + columnName + ` = trust_profiles.` + columnName + ` + 1, updated_at = NOW();
-	`
-	
-	result := h.pg.Exec(query, phoneHash)
-	if result.Error != nil {
-		slog.Error("failed to update ai metrics", "error", result.Error, "hash", phoneHash[:8])
-		return
+	if shopDomain == "" {
+		slog.Warn("shopify uninstall webhook received without shop domain")
+		return c.SendStatus(fiber.StatusOK)
 	}
-	if result.RowsAffected == 0 {
-		slog.Error("metric upsert affected zero rows — possible race condition",
-			"hash", phoneHash[:8],
-			"column", columnName,
-		)
+
+	slog.Info("processing shopify app uninstall webhook", "shop", shopDomain)
+
+	now := time.Now()
+	err := h.pg.Transaction(func(tx *gorm.DB) error {
+		var cred domain.PlatformCredential
+		if err := tx.Where("platform = ? AND shop_domain = ? AND is_active = ?", "shopify", shopDomain, true).First(&cred).Error; err != nil {
+			return err
+		}
+
+		cred.IsActive = false
+		cred.UninstalledAt = &now
+		if err := tx.Save(&cred).Error; err != nil {
+			return err
+		}
+
+		var merchant domain.Merchant
+		if err := tx.Where("id = ?", cred.MerchantID).First(&merchant).Error; err != nil {
+			return err
+		}
+		merchant.IsActive = false
+		if err := tx.Save(&merchant).Error; err != nil {
+			return err
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		slog.Error("failed processing shopify app uninstall transaction", "shop", shopDomain, "error", err)
 	}
+
+	return c.SendStatus(fiber.StatusOK)
+}
+
+func (h *WebhookHandler) HandleShopifyCustomersDataRequest(c *fiber.Ctx) error {
+	return c.SendStatus(fiber.StatusOK)
+}
+
+func (h *WebhookHandler) HandleShopifyCustomersRedact(c *fiber.Ctx) error {
+	return c.SendStatus(fiber.StatusOK)
+}
+
+func (h *WebhookHandler) HandleShopifyShopRedact(c *fiber.Ctx) error {
+	var payload struct {
+		ShopDomain string `json:"shop_domain"`
+	}
+	if err := c.BodyParser(&payload); err != nil {
+		return c.SendStatus(fiber.StatusOK)
+	}
+
+	slog.Info("processing shopify GDPR shop redact webhook", "shop", payload.ShopDomain)
+
+	now := time.Now()
+	err := h.pg.Transaction(func(tx *gorm.DB) error {
+		var cred domain.PlatformCredential
+		if err := tx.Where("platform = ? AND shop_domain = ?", "shopify", payload.ShopDomain).First(&cred).Error; err != nil {
+			return err
+		}
+
+		cred.IsActive = false
+		if cred.UninstalledAt == nil {
+			cred.UninstalledAt = &now
+		}
+		if err := tx.Save(&cred).Error; err != nil {
+			return err
+		}
+
+		var merchant domain.Merchant
+		if err := tx.Where("id = ?", cred.MerchantID).First(&merchant).Error; err != nil {
+			return err
+		}
+		merchant.IsActive = false
+		if err := tx.Save(&merchant).Error; err != nil {
+			return err
+		}
+
+		if err := tx.Where("merchant_id = ?", merchant.ID).Delete(&domain.CustomerFeedback{}).Error; err != nil {
+			return err
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		slog.Error("failed shopify GDPR redact transaction", "shop", payload.ShopDomain, "error", err)
+	}
+
+	return c.SendStatus(fiber.StatusOK)
 }

@@ -1,31 +1,28 @@
 package handlers
 
 import (
-	"encoding/csv"
-	"io"
-	"log/slog"
-      "crypto/rand"
+	"crypto/rand"
 	"encoding/hex"
+	"log/slog"
+
 	"github.com/arpitmandhotra/api-integrator/internal/domain"
+	"github.com/arpitmandhotra/api-integrator/internal/service"
 
 	"github.com/gofiber/fiber/v2"
-	// Adjust this import path to match your actual domain/crypto packages
-	"github.com/arpitmandhotra/api-integrator/internal/crypto"
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 )
 
 type AdminHandler struct {
-	pg *gorm.DB
+	pg     *gorm.DB
+	csvSvc *service.CSVImportService
 }
 
-func NewAdminHandler(pg *gorm.DB) *AdminHandler {
-	return &AdminHandler{pg: pg}
+func NewAdminHandler(pg *gorm.DB, csvSvc *service.CSVImportService) *AdminHandler {
+	return &AdminHandler{pg: pg, csvSvc: csvSvc}
 }
 
-// ImportBadActorsCSV handles the multipart form upload
-func (h *AdminHandler) ImportBadActorsCSV(c *fiber.Ctx) error {
-	// 1. Grab the multipart file metadata from the request
+// ValidateCSV handles POST /v1/admin/import-csv/validate
+func (h *AdminHandler) ValidateCSV(c *fiber.Ctx) error {
 	fileHeader, err := c.FormFile("file")
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
@@ -33,39 +30,56 @@ func (h *AdminHandler) ImportBadActorsCSV(c *fiber.Ctx) error {
 		})
 	}
 
-	// 2. Open the file stream (This prevents loading the whole file into RAM)
+	platform := c.Query("platform", "generic")
+	if formPlatform := c.FormValue("platform"); formPlatform != "" {
+		platform = formPlatform
+	}
+
 	file, err := fileHeader.Open()
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": "failed to open file stream",
 		})
 	}
-	defer file.Close() // ALWAYS defer the close to prevent memory leaks
+	defer file.Close()
 
-	// 3. Initialize the CSV Reader
-	reader := csv.NewReader(file)
-
-	// 4. Read the header row to validate the merchant's format
-	headers, err := reader.Read()
+	report, err := h.csvSvc.ValidateAndStage(c.Context(), file, platform)
 	if err != nil {
+		slog.Error("CSV validation failed", "error", err)
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "failed to read csv headers or file is empty",
+			"error": err.Error(),
 		})
 	}
 
-	// Strict format enforcement
-	if len(headers) < 2 || headers[0] != "phone" || headers[1] != "reason" {
+	return c.Status(fiber.StatusOK).JSON(report)
+}
+
+// CommitCSVRequest matches the expected body for /commit
+type CommitCSVRequest struct {
+	PreviewToken string `json:"preview_token"`
+	Platform     string `json:"platform"`
+}
+
+// CommitCSV handles POST /v1/admin/import-csv/commit
+func (h *AdminHandler) CommitCSV(c *fiber.Ctx) error {
+	var req CommitCSVRequest
+	if err := c.BodyParser(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "invalid csv format. Expected headers: phone, reason",
+			"error": "invalid JSON body",
 		})
 	}
 
-	var batch []domain.TrustProfile
-	const batchSize = 1000 // We will send to Postgres in blocks of 1,000
-	totalProcessed := 0
-	totalSkipped := 0
+	if req.PreviewToken == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "missing 'preview_token'",
+		})
+	}
 
-	// Get the merchant ID from the context (set by your RequireAdminKey auth middleware)
+	platform := req.Platform
+	if platform == "" {
+		platform = c.Query("platform", "generic")
+	}
+
 	merchantID, ok := c.Locals("kotman.merchant_id").(string)
 	if !ok || merchantID == "" {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
@@ -73,75 +87,15 @@ func (h *AdminHandler) ImportBadActorsCSV(c *fiber.Ctx) error {
 		})
 	}
 
-	// 5. Stream the rows continuously
-	for {
-		row, err := reader.Read()
-		if err == io.EOF {
-			break // End of file reached, exit the loop cleanly
-		}
-		if err != nil {
-			slog.Warn("skipping malformed csv row", "error", err)
-			totalSkipped++
-			continue
-		}
-
-		rawPhone := row[0]
-		reason := row[1]
-
-		if rawPhone == "" {
-			totalSkipped++
-			continue
-		}
-
-		// 6. The Crypto Wiring - Hash before it ever touches your database
-		phoneHash := crypto.HashPhone(rawPhone)
-
-		// Append the cleaned data to our current batch
-		// Append the cleaned data to our current batch
-		batch = append(batch, domain.TrustProfile{
-			PhoneHash:           phoneHash,
-			FirstSeenMerchantID: merchantID, // Changed from MerchantID
-			
-			// --- System Overrides ---
-			IsBlacklisted:   true,   // Explicitly mark as a bad actor
-			BlacklistReason: reason, // Changed from Reason
-			
-			// 🧠 --- V2 AI Baseline Initialization --- 🧠
-			// If they are on a merchant's blocklist CSV, we must assume 
-			// they have historically ruined at least one order.
-			TotalOrders: 1, 
-			TotalRTOs:   1, 
+	result, err := h.csvSvc.Commit(c.Context(), req.PreviewToken, merchantID, platform)
+	if err != nil {
+		slog.Error("CSV commit failed", "error", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": err.Error(),
 		})
-
-		// 7. Flush to Database when the batch hits 1,000 records
-		if len(batch) >= batchSize {
-			// Direct Gorm bulk insert ignoring duplicates
-			if dbErr := h.pg.WithContext(c.Context()).Clauses(clause.OnConflict{DoNothing: true}).Create(&batch).Error; dbErr != nil {
-				slog.Error("failed to insert batch", "error", dbErr)
-			} else {
-				totalProcessed += len(batch)
-			}
-
-			// Clear the batch slice for the next 1,000 records, reusing the memory
-			batch = batch[:0]
-		}
 	}
 
-	// 8. Flush any leftover records (e.g., the final 342 records of a 5,342 row file)
-	if len(batch) > 0 {
-		if dbErr := h.pg.WithContext(c.Context()).Clauses(clause.OnConflict{DoNothing: true}).Create(&batch).Error; dbErr != nil {
-			slog.Error("failed to insert final batch", "error", dbErr)
-		} else {
-			totalProcessed += len(batch)
-		}
-	}
-
-	// 9. Return the success telemetry to the frontend
-	return c.JSON(fiber.Map{
-		"message":           "import complete",
-		"records_processed": totalProcessed,
-		"records_skipped":   totalSkipped,
-	})
+	return c.Status(fiber.StatusOK).JSON(result)
 }
 
 // GetRecentBlocks fetches the latest scammers caught by the Kotman engine
@@ -170,6 +124,15 @@ type OnboardMerchantRequest struct {
 	StoreName string `json:"store_name"`
 }
 
+// GenerateAPIKey generates a cryptographically secure 32-byte API key with prefix kt_live_
+func GenerateAPIKey() (string, error) {
+	bytes := make([]byte, 32)
+	if _, err := rand.Read(bytes); err != nil {
+		return "", err
+	}
+	return "kt_live_" + hex.EncodeToString(bytes), nil
+}
+
 // OnboardMerchant generates a secure API credential and inserts a new merchant profile using UUIDs
 func (h *AdminHandler) OnboardMerchant(c *fiber.Ctx) error {
 	var req OnboardMerchantRequest
@@ -180,15 +143,12 @@ func (h *AdminHandler) OnboardMerchant(c *fiber.Ctx) error {
 	}
 
 	// 1. Generate 32 bytes of cryptographically secure randomness
-	bytes := make([]byte, 32)
-	if _, err := rand.Read(bytes); err != nil {
+	apiKey, err := GenerateAPIKey()
+	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": "Failed to safely generate crypto random bytes",
 		})
 	}
-
-	// 2. Format a clean token prefix for their storefront integration
-	apiKey := "kt_live_" + hex.EncodeToString(bytes)
 
 	// 3. Assemble the updated Merchant schema
 	merchant := domain.Merchant{

@@ -59,8 +59,11 @@ func main() {
 	// ==========================================
 	trustSvc := service.NewRedisTrustService(redisClient, postgresClient)
 	trustHandler := handlers.NewTrustHandler(trustSvc)
-	adminHandler := handlers.NewAdminHandler(postgresClient)
+	csvSvc := service.NewCSVImportService(postgresClient, redisClient)
+	adminHandler := handlers.NewAdminHandler(postgresClient, csvSvc)
 	webhookHandler := handlers.NewWebhookHandler(postgresClient)
+	oauthHandler := handlers.NewOAuthHandler(postgresClient, redisClient)
+	magentoHandler := handlers.NewMagentoOnboardHandler(postgresClient)
 
 	// ==========================================
 	// 3. THE ROUTER & MIDDLEWARE LAYER
@@ -84,12 +87,23 @@ func main() {
 	// 4. THE ROUTES
 	// ==========================================
 
+	// Public Onboarding Routes (Shopify & WooCommerce OAuth)
+	app.Get("/auth/shopify/install", oauthHandler.HandleShopifyInstall)
+	app.Get("/auth/shopify/callback", oauthHandler.HandleShopifyCallback)
+	app.Get("/auth/woocommerce/start", oauthHandler.HandleWooCommerceAuthStart)
+	app.Post("/auth/woocommerce/callback", oauthHandler.HandleWooCommerceCallback)
+	app.Get("/auth/woocommerce/return", oauthHandler.HandleWooCommerceReturn)
+
 	// DOOR B: The Omni-Channel Webhook Listeners
 	webhookGroup := app.Group("/v1/webhooks")
 	
 	// Shopify is our primary driver; it MUST have a secret.
 	webhookGroup.Post("/shopify", middleware.RequireShopifyHMAC(shopifySecret), webhookHandler.HandleShopify)
 	webhookGroup.Post("/shopify/review", middleware.RequireShopifyHMAC(shopifySecret), webhookHandler.HandleProductReview)
+	webhookGroup.Post("/shopify/app/uninstalled", middleware.RequireShopifyHMAC(shopifySecret), webhookHandler.HandleShopifyUninstall)
+	webhookGroup.Post("/shopify/compliance/customers_data_request", middleware.RequireShopifyHMAC(shopifySecret), webhookHandler.HandleShopifyCustomersDataRequest)
+	webhookGroup.Post("/shopify/compliance/customers_redact", middleware.RequireShopifyHMAC(shopifySecret), webhookHandler.HandleShopifyCustomersRedact)
+	webhookGroup.Post("/shopify/compliance/shop_redact", middleware.RequireShopifyHMAC(shopifySecret), webhookHandler.HandleShopifyShopRedact)
 
 	// FIX 2: Conditional route registration. 
 	// WooCommerce and Magento endpoints only exist if their secrets are configured.
@@ -114,8 +128,10 @@ func main() {
 	adminGroup.Use(middleware.RequireAdminKey())
 
 	adminGroup.Post("/onboard", adminHandler.OnboardMerchant)
+	adminGroup.Post("/onboard/magento", magentoHandler.HandleMagentoOnboard)
 	adminGroup.Post("/unblock", adminHandler.GetRecentBlocks)
-	adminGroup.Post("/import-csv", adminHandler.ImportBadActorsCSV)
+	adminGroup.Post("/import-csv/validate", adminHandler.ValidateCSV)
+	adminGroup.Post("/import-csv/commit", adminHandler.CommitCSV)
 
 	// ==========================================
 	// 5. HEALTH CHECK & START UP

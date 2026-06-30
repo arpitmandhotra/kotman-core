@@ -10,7 +10,11 @@ RUN go mod download
 
 COPY . .
 
-RUN CGO_ENABLED=0 GOOS=linux go build -o kotman-engine ./cmd/main.go
+# Compile all four binaries
+RUN CGO_ENABLED=0 GOOS=linux go build -o bin/server ./cmd/main.go
+RUN CGO_ENABLED=0 GOOS=linux go build -o bin/worker ./cmd/worker/recovery_worker.go
+RUN CGO_ENABLED=0 GOOS=linux go build -o bin/migrate ./cmd/migrate/main.go
+RUN CGO_ENABLED=0 GOOS=linux go build -o bin/purge ./cmd/purge/main.go
 
 # ==========================================
 # STAGE 2: THE PRODUCTION RUNNER
@@ -25,12 +29,12 @@ RUN apk add --no-cache tzdata
 RUN addgroup -g 1001 -S kotman && \
     adduser -u 1001 -S kotman -G kotman
 
-WORKDIR /home/kotman
+WORKDIR /app
 
-COPY --from=builder --chown=kotman:kotman /app/kotman-engine .
+COPY --from=builder --chown=kotman:kotman /app/bin /app/bin
 
 USER kotman
 
 EXPOSE 3000
 
-CMD ["./kotman-engine"]
+CMD ["/app/bin/server"]

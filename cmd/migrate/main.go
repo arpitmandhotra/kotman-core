@@ -39,5 +39,15 @@ func main() {
 		log.Fatalf("❌ Failed to migrate TransactionHistory: %v", err)
 	}
 
+	log.Println("📦 Syncing domain.PlatformCredential schema...")
+	if err := db.AutoMigrate(&domain.PlatformCredential{}); err != nil {
+		log.Fatalf("❌ Failed to migrate PlatformCredential: %v", err)
+	}
+
+	log.Println("📦 Syncing domain.BackfilledOrder schema...")
+	if err := db.AutoMigrate(&domain.BackfilledOrder{}); err != nil {
+		log.Fatalf("❌ Failed to migrate BackfilledOrder: %v", err)
+	}
+
 	log.Println("✅ Database schema perfectly synchronized. Safe to deploy.")
 }
