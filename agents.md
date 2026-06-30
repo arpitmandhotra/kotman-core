@@ -19,3 +19,7 @@
 ## SQL Safety
 - The column name allowlist in incrementMetric must never 
   be removed. Never interpolate column names from user input.
+
+## Deployment & CLI Operations
+- Database migrations (cmd/migrate/main.go) must be executed as a one-off ECS task prior to updating the live web server or background worker services.
+- The hard-purge CLI (cmd/purge/main.go) must be run on a daily scheduled cadence using an ECS Scheduled Task (EventBridge cron rule).

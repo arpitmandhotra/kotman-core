@@ -45,6 +45,8 @@ func NewPostgresClient() *gorm.DB {
 		&domain.TrustProfile{},
 		&domain.CustomerFeedback{},
 		&domain.TransactionHistory{},
+		&domain.PlatformCredential{},
+		&domain.BackfilledOrder{},
 	)
 	if err != nil {
 		log.Fatalf("Failed to auto-migrate database schema: %v", err)

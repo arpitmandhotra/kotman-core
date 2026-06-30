@@ -11,8 +11,10 @@ import (
 	"time"
 
 	"github.com/arpitmandhotra/api-integrator/internal/crm"
+	"github.com/arpitmandhotra/api-integrator/internal/crypto"
 	"github.com/arpitmandhotra/api-integrator/internal/database"
 	"github.com/arpitmandhotra/api-integrator/internal/domain"
+	"github.com/arpitmandhotra/api-integrator/internal/integrations/shopify"
 	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
 )
@@ -57,6 +59,7 @@ func main() {
 	slog.Info("Subscribed to Redis keyspace expiry events")
 
 	go worker.listenAndProcess(ctx, pubsub)
+	go worker.startTokenRefresher(ctx)
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
@@ -433,4 +436,86 @@ func safePreview(hash string) string {
 		return hash
 	}
 	return hash[:8]
+}
+
+func (w *RecoveryWorker) startTokenRefresher(ctx context.Context) {
+	slog.Info("Starting background Shopify token refresher...")
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+
+	// Run immediately on startup
+	w.refreshShopifyTokens(ctx)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			w.refreshShopifyTokens(ctx)
+		}
+	}
+}
+
+func (w *RecoveryWorker) refreshShopifyTokens(ctx context.Context) {
+	slog.Info("Running background Shopify token refresh checks...")
+	var creds []domain.PlatformCredential
+	// Find active Shopify credentials expiring within the next 10 minutes (or already expired)
+	threshold := time.Now().Add(10 * time.Minute)
+	err := w.pg.Where("platform = ? AND is_active = ? AND token_expires_at < ?", "shopify", true, threshold).Find(&creds).Error
+	if err != nil {
+		slog.Error("failed to query expiring shopify credentials", "error", err)
+		return
+	}
+
+	if len(creds) == 0 {
+		slog.Info("no expiring shopify credentials found")
+		return
+	}
+
+	for _, cred := range creds {
+		slog.Info("attempting to refresh shopify token", "shop", cred.ShopDomain, "merchant_id", cred.MerchantID)
+
+		refreshToken, err := crypto.DecryptToken(cred.RefreshTokenEncrypted)
+		if err != nil {
+			slog.Error("failed to decrypt shopify refresh token", "shop", cred.ShopDomain, "merchant_id", cred.MerchantID, "error", err)
+			continue
+		}
+
+		resp, err := shopify.RefreshAccessToken(ctx, cred.ShopDomain, refreshToken)
+		if err != nil {
+			slog.Error("shopify refresh API call failed", "shop", cred.ShopDomain, "merchant_id", cred.MerchantID, "error", err)
+			continue
+		}
+
+		encAccess, err := crypto.EncryptToken(resp.AccessToken)
+		if err != nil {
+			slog.Error("failed to encrypt new shopify access token", "shop", cred.ShopDomain, "error", err)
+			continue
+		}
+
+		var encRefresh string
+		if resp.RefreshToken != "" {
+			encRefresh, err = crypto.EncryptToken(resp.RefreshToken)
+			if err != nil {
+				slog.Error("failed to encrypt new shopify refresh token", "shop", cred.ShopDomain, "error", err)
+				continue
+			}
+		} else {
+			encRefresh = cred.RefreshTokenEncrypted
+		}
+
+		expiresAt := time.Now().Add(time.Duration(resp.ExpiresIn) * time.Second)
+		now := time.Now()
+
+		cred.AccessTokenEncrypted = encAccess
+		cred.RefreshTokenEncrypted = encRefresh
+		cred.TokenExpiresAt = &expiresAt
+		cred.LastRefreshedAt = &now
+
+		if err := w.pg.Save(&cred).Error; err != nil {
+			slog.Error("failed to save refreshed shopify credentials", "shop", cred.ShopDomain, "merchant_id", cred.MerchantID, "error", err)
+		} else {
+			slog.Info("successfully refreshed shopify credentials", "shop", cred.ShopDomain, "merchant_id", cred.MerchantID)
+		}
+	}
 }

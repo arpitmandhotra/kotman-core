@@ -46,3 +46,32 @@ type TransactionHistory struct {
 	FeeCharged float64   `gorm:"not null"`
 	CreatedAt  time.Time
 }
+
+type PlatformCredential struct {
+    ID              string `gorm:"primaryKey;type:uuid;default:gen_random_uuid()"`
+    MerchantID      string `gorm:"uniqueIndex:idx_merchant_platform;not null"`
+    Platform        string `gorm:"uniqueIndex:idx_merchant_platform;not null"` // "shopify" | "woocommerce" | "magento"
+    ShopDomain      string `gorm:"index"` // e.g. "example.myshopify.com" or store base URL for WooCommerce/Magento
+
+    // ENCRYPTED AT REST — use AES-256-GCM via internal/crypto, never store plaintext
+    AccessTokenEncrypted  string `gorm:"type:text"`  // Shopify offline access token (encrypted)
+    RefreshTokenEncrypted string `gorm:"type:text"`  // Shopify refresh token (encrypted)
+    ConsumerKeyEncrypted    string `gorm:"type:text"` // WooCommerce consumer key (encrypted)
+    ConsumerSecretEncrypted string `gorm:"type:text"` // WooCommerce consumer secret (encrypted)
+    IntegrationTokenEncrypted string `gorm:"type:text"` // Magento integration token (encrypted)
+
+    Scopes          string    `gorm:"type:text"` // comma-separated granted scopes
+    TokenExpiresAt  *time.Time `gorm:"index"` // CRITICAL for Shopify — 60 minute expiry
+    LastRefreshedAt *time.Time
+    InstalledAt     time.Time
+    UninstalledAt   *time.Time `gorm:"index"` // set by shop/redact webhook, never hard-delete
+    IsActive        bool      `gorm:"default:true"`
+}
+
+type BackfilledOrder struct {
+	ID         string    `gorm:"primaryKey;type:uuid;default:gen_random_uuid()"`
+	MerchantID string    `gorm:"uniqueIndex:idx_merchant_order;not null"`
+	Platform   string    `gorm:"not null"`
+	OrderID    string    `gorm:"uniqueIndex:idx_merchant_order;not null"`
+	CreatedAt  time.Time
+}
