@@ -2,14 +2,12 @@ package service
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
 	"time"
 
 	"github.com/arpitmandhotra/api-integrator/internal/domain"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/sync/singleflight"
 	"gorm.io/gorm"
@@ -76,63 +74,6 @@ func (s *RedisTrustService) EvaluateRisk(ctx context.Context, phoneHash string, 
 			Score:     10,
 			Action:    "HIDE_COD",
 		}, nil
-	}
-
-	// ==========================================
-	// BILLING: Value-Based Tiered Wallet Deduction
-	// ==========================================
-	fee := CalculateFee(cartValue)
-	var updatedBalance float64
-
-	err = s.pg.Transaction(func(tx *gorm.DB) error {
-		// 1. Balance verification and subtraction
-		// Checks RowsAffected == 0 to prevent race conditions (AGENTS.md rule)
-		// For Postgres, we rely on check_positive_balance constraint. For SQLite, we query with threshold.
-		query := tx.Model(&domain.MerchantSettings{}).Where("merchant_id = ?", merchantID)
-		if tx.Dialector.Name() != "postgres" {
-			query = query.Where("wallet_balance >= ?", fee)
-		}
-
-		result := query.Update("wallet_balance", gorm.Expr("wallet_balance - ?", fee))
-		if result.Error != nil {
-			var pgErr *pgconn.PgError
-			if errors.As(result.Error, &pgErr) && pgErr.Code == "23514" {
-				return fmt.Errorf("insufficient wallet balance")
-			}
-			return result.Error
-		}
-		if result.RowsAffected == 0 {
-			return fmt.Errorf("insufficient wallet balance")
-		}
-
-		// 2. Insert into transaction history
-		history := domain.TransactionHistory{
-			MerchantID: merchantID,
-			CartValue:  cartValue,
-			FeeCharged: fee,
-		}
-		if err := tx.Create(&history).Error; err != nil {
-			return err
-		}
-
-		// 3. Load updated balance for Redis cache sync
-		var settings domain.MerchantSettings
-		if err := tx.Where("merchant_id = ?", merchantID).First(&settings).Error; err != nil {
-			return err
-		}
-		updatedBalance = settings.WalletBalance
-		return nil
-	})
-
-	if err != nil {
-		slog.Error("billing deduction failed", "merchant_id", merchantID, "error", err)
-		return domain.TrustResponse{}, fmt.Errorf("billing deduction failed: %w", err)
-	}
-
-	// 4. Redis Cache Sync for local account balance
-	balanceKey := "merchant:balance:" + merchantID
-	if cacheErr := s.db.Set(ctx, balanceKey, fmt.Sprintf("%.2f", updatedBalance), 0).Err(); cacheErr != nil {
-		slog.Error("failed to sync wallet balance to redis cache", "error", cacheErr, "merchant_id", merchantID)
 	}
 
 	// ==========================================
