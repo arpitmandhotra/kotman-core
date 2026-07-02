@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"crypto/sha256"
 	"crypto/subtle"
 	"os"
 
@@ -23,8 +24,12 @@ func RequireAdminKey() fiber.Handler {
 		// 2. Grab the key the user sent in the HTTP headers
 		providedKey := c.Get("X-Admin-Key")
 
+		// Hash both keys using SHA-256 before constant-time comparison to prevent timing and length leaks
+		expectedHash := sha256.Sum256([]byte(expectedKey))
+		providedHash := sha256.Sum256([]byte(providedKey))
+
 		// 3. Constant-time comparison to prevent timing attacks
-		if subtle.ConstantTimeCompare([]byte(providedKey), []byte(expectedKey)) != 1 {
+		if subtle.ConstantTimeCompare(expectedHash[:], providedHash[:]) != 1 {
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
 				"error": "Unauthorized. Invalid admin credentials.",
 			})
