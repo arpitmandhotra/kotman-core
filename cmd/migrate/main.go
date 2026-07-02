@@ -49,5 +49,20 @@ func main() {
 		log.Fatalf("❌ Failed to migrate BackfilledOrder: %v", err)
 	}
 
+	log.Println("📦 Syncing domain.BillableEvent schema...")
+	if err := db.AutoMigrate(&domain.BillableEvent{}); err != nil {
+		log.Fatalf("❌ Failed to migrate BillableEvent: %v", err)
+	}
+
+	log.Println("📦 Syncing domain.MerchantInvoice schema...")
+	if err := db.AutoMigrate(&domain.MerchantInvoice{}); err != nil {
+		log.Fatalf("❌ Failed to migrate MerchantInvoice: %v", err)
+	}
+
+	log.Println("📦 Syncing domain.MerchantBillingAccumulator schema...")
+	if err := db.AutoMigrate(&domain.MerchantBillingAccumulator{}); err != nil {
+		log.Fatalf("❌ Failed to migrate MerchantBillingAccumulator: %v", err)
+	}
+
 	log.Println("✅ Database schema perfectly synchronized. Safe to deploy.")
 }

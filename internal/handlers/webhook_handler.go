@@ -1,9 +1,16 @@
 package handlers
 
 import (
+	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/base64"
 	"log/slog"
+	"strings"
 	"time"
 
+	"github.com/arpitmandhotra/api-integrator/internal/billing"
 	"github.com/arpitmandhotra/api-integrator/internal/crypto"
 	"github.com/arpitmandhotra/api-integrator/internal/database"
 	"github.com/arpitmandhotra/api-integrator/internal/domain"
@@ -12,18 +19,102 @@ import (
 )
 
 type WebhookHandler struct {
-	pg *gorm.DB 
+	pg            *gorm.DB
+	shopifySecret string
+	wooSecret     string
+	magentoSecret string
 }
 
-func NewWebhookHandler(pgDB *gorm.DB) *WebhookHandler {
-	return &WebhookHandler{pg: pgDB}
+func NewWebhookHandler(pgDB *gorm.DB, shopifySecret, wooSecret, magentoSecret string) *WebhookHandler {
+	return &WebhookHandler{
+		pg:            pgDB,
+		shopifySecret: shopifySecret,
+		wooSecret:     wooSecret,
+		magentoSecret: magentoSecret,
+	}
+}
+
+// resolveMerchantID locates the Merchant ID associated with the incoming webhook platform request
+func (h *WebhookHandler) resolveMerchantID(c *fiber.Ctx, platform string) string {
+	var shopDomain string
+	switch platform {
+	case "shopify":
+		shopDomain = c.Get("X-Shopify-Shop-Domain")
+	case "woocommerce":
+		shopDomain = c.Get("X-Wc-Webhook-Source")
+		if shopDomain == "" {
+			shopDomain = c.BaseURL()
+		}
+	case "magento":
+		shopDomain = c.BaseURL()
+	}
+
+	if shopDomain == "" {
+		return ""
+	}
+
+	cleanDomain := func(d string) string {
+		d = strings.TrimPrefix(d, "https://")
+		d = strings.TrimPrefix(d, "http://")
+		d = strings.TrimSuffix(d, "/")
+		return strings.ToLower(strings.TrimSpace(d))
+	}
+
+	cleaned := cleanDomain(shopDomain)
+
+	var cred domain.PlatformCredential
+	err := h.pg.Where("platform = ? AND is_active = ? AND (LOWER(shop_domain) = ? OR LOWER(shop_domain) LIKE ?)",
+		platform, true, cleaned, "%"+cleaned+"%").First(&cred).Error
+	if err == nil {
+		return cred.MerchantID
+	}
+
+	return ""
 }
 
 // ==========================================
 // 1. SHOPIFY ADAPTER
 // ==========================================
 func (h *WebhookHandler) HandleShopify(c *fiber.Ctx) error {
-	topic := c.Get("X-Shopify-Topic") 
+	rawBody := c.Body()
+
+	// 1. Webhook signature validation BEFORE parsing or billing
+	shopifySignature := c.Get("X-Shopify-Hmac-Sha256")
+	if shopifySignature == "" {
+		slog.Warn("shopify webhook blocked: missing signature")
+		return c.SendStatus(fiber.StatusUnauthorized)
+	}
+
+	mac := hmac.New(sha256.New, []byte(h.shopifySecret))
+	mac.Write(rawBody)
+	expectedMAC := base64.StdEncoding.EncodeToString(mac.Sum(nil))
+
+	if subtle.ConstantTimeCompare([]byte(shopifySignature), []byte(expectedMAC)) != 1 {
+		slog.Warn("shopify webhook blocked: cryptographic mismatch")
+		return c.SendStatus(fiber.StatusUnauthorized)
+	}
+
+	topic := c.Get("X-Shopify-Topic")
+
+	// BILLING: process this order for fee calculation
+	merchantID := h.resolveMerchantID(c, "shopify")
+	if merchantID != "" {
+		bodyCopy := make([]byte, len(rawBody))
+		copy(bodyCopy, rawBody)
+		go func(platform, mID string, body []byte) {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if err := billing.ProcessInboundOrder(ctx, platform, mID, body); err != nil {
+				slog.Error("billing ingestion failed",
+					"platform", platform,
+					"merchant_id", mID,
+					"error", err,
+				)
+			}
+		}("shopify", merchantID, bodyCopy)
+	} else {
+		slog.Warn("could not resolve merchant ID for shopify billing webhook")
+	}
 
 	var payload struct {
 		Customer struct {
@@ -33,11 +124,11 @@ func (h *WebhookHandler) HandleShopify(c *fiber.Ctx) error {
 
 	if err := c.BodyParser(&payload); err != nil {
 		slog.Error("shopify webhook invalid json", "error", err)
-		return c.SendStatus(fiber.StatusOK) 
+		return c.SendStatus(fiber.StatusOK)
 	}
 
 	if payload.Customer.Phone == "" {
-		return c.SendStatus(fiber.StatusOK) 
+		return c.SendStatus(fiber.StatusOK)
 	}
 
 	phoneHash := crypto.HashPhone(payload.Customer.Phone)
@@ -61,7 +152,45 @@ func (h *WebhookHandler) HandleShopify(c *fiber.Ctx) error {
 // 2. WOOCOMMERCE ADAPTER
 // ==========================================
 func (h *WebhookHandler) HandleWooCommerce(c *fiber.Ctx) error {
-	topic := c.Get("X-WC-Webhook-Topic") 
+	rawBody := c.Body()
+
+	// 1. Webhook signature validation BEFORE parsing or billing
+	wooSignature := c.Get("X-WC-Webhook-Signature")
+	if wooSignature == "" {
+		slog.Warn("woocommerce webhook blocked: missing signature")
+		return c.SendStatus(fiber.StatusUnauthorized)
+	}
+
+	mac := hmac.New(sha256.New, []byte(h.wooSecret))
+	mac.Write(rawBody)
+	expectedMAC := base64.StdEncoding.EncodeToString(mac.Sum(nil))
+
+	if subtle.ConstantTimeCompare([]byte(wooSignature), []byte(expectedMAC)) != 1 {
+		slog.Warn("woocommerce webhook blocked: cryptographic mismatch")
+		return c.SendStatus(fiber.StatusUnauthorized)
+	}
+
+	topic := c.Get("X-WC-Webhook-Topic")
+
+	// BILLING: process this order for fee calculation
+	merchantID := h.resolveMerchantID(c, "woocommerce")
+	if merchantID != "" {
+		bodyCopy := make([]byte, len(rawBody))
+		copy(bodyCopy, rawBody)
+		go func(platform, mID string, body []byte) {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if err := billing.ProcessInboundOrder(ctx, platform, mID, body); err != nil {
+				slog.Error("billing ingestion failed",
+					"platform", platform,
+					"merchant_id", mID,
+					"error", err,
+				)
+			}
+		}("woocommerce", merchantID, bodyCopy)
+	} else {
+		slog.Warn("could not resolve merchant ID for woocommerce billing webhook")
+	}
 
 	var payload struct {
 		Billing struct {
@@ -98,7 +227,38 @@ func (h *WebhookHandler) HandleWooCommerce(c *fiber.Ctx) error {
 // 3. MAGENTO ADAPTER
 // ==========================================
 func (h *WebhookHandler) HandleMagento(c *fiber.Ctx) error {
-	eventTopic := c.Get("X-Magento-Event") 
+	rawBody := c.Body()
+
+	// 1. Webhook signature validation BEFORE parsing or billing
+	authHeader := c.Get("Authorization")
+	expectedHeader := "Bearer " + h.magentoSecret
+
+	if subtle.ConstantTimeCompare([]byte(authHeader), []byte(expectedHeader)) != 1 {
+		slog.Warn("magento webhook blocked: unauthorized")
+		return c.SendStatus(fiber.StatusUnauthorized)
+	}
+
+	eventTopic := c.Get("X-Magento-Event")
+
+	// BILLING: process this order for fee calculation
+	merchantID := h.resolveMerchantID(c, "magento")
+	if merchantID != "" {
+		bodyCopy := make([]byte, len(rawBody))
+		copy(bodyCopy, rawBody)
+		go func(platform, mID string, body []byte) {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if err := billing.ProcessInboundOrder(ctx, platform, mID, body); err != nil {
+				slog.Error("billing ingestion failed",
+					"platform", platform,
+					"merchant_id", mID,
+					"error", err,
+				)
+			}
+		}("magento", merchantID, bodyCopy)
+	} else {
+		slog.Warn("could not resolve merchant ID for magento billing webhook")
+	}
 
 	var payload struct {
 		Order struct {
@@ -141,6 +301,24 @@ func (h *WebhookHandler) HandleMagento(c *fiber.Ctx) error {
 // 4. INTENT-WEIGHTED FEEDBACK INGESTION
 // ==========================================
 func (h *WebhookHandler) HandleProductReview(c *fiber.Ctx) error {
+	rawBody := c.Body()
+
+	// 1. Webhook signature validation BEFORE parsing or billing
+	shopifySignature := c.Get("X-Shopify-Hmac-Sha256")
+	if shopifySignature == "" {
+		slog.Warn("shopify review webhook blocked: missing signature")
+		return c.SendStatus(fiber.StatusUnauthorized)
+	}
+
+	mac := hmac.New(sha256.New, []byte(h.shopifySecret))
+	mac.Write(rawBody)
+	expectedMAC := base64.StdEncoding.EncodeToString(mac.Sum(nil))
+
+	if subtle.ConstantTimeCompare([]byte(shopifySignature), []byte(expectedMAC)) != 1 {
+		slog.Warn("shopify review webhook blocked: cryptographic mismatch")
+		return c.SendStatus(fiber.StatusUnauthorized)
+	}
+
 	var payload struct {
 		Customer struct {
 			Phone string `json:"phone"`
@@ -163,8 +341,8 @@ func (h *WebhookHandler) HandleProductReview(c *fiber.Ctx) error {
 
 	phoneHash := crypto.HashPhone(payload.Customer.Phone)
 	
-	merchantID, ok := c.Locals("kotman.merchant_id").(string)
-	if !ok {
+	merchantID := h.resolveMerchantID(c, "shopify")
+	if merchantID == "" {
 		slog.Error("failed extraction of validated merchant context")
 		return c.SendStatus(fiber.StatusOK)
 	}

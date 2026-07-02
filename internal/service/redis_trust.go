@@ -2,12 +2,14 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
 	"time"
 
 	"github.com/arpitmandhotra/api-integrator/internal/domain"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/sync/singleflight"
 	"gorm.io/gorm"
@@ -85,10 +87,18 @@ func (s *RedisTrustService) EvaluateRisk(ctx context.Context, phoneHash string, 
 	err = s.pg.Transaction(func(tx *gorm.DB) error {
 		// 1. Balance verification and subtraction
 		// Checks RowsAffected == 0 to prevent race conditions (AGENTS.md rule)
-		result := tx.Model(&domain.MerchantSettings{}).
-			Where("merchant_id = ? AND wallet_balance >= ?", merchantID, fee).
-			Update("wallet_balance", gorm.Expr("wallet_balance - ?", fee))
+		// For Postgres, we rely on check_positive_balance constraint. For SQLite, we query with threshold.
+		query := tx.Model(&domain.MerchantSettings{}).Where("merchant_id = ?", merchantID)
+		if tx.Dialector.Name() != "postgres" {
+			query = query.Where("wallet_balance >= ?", fee)
+		}
+
+		result := query.Update("wallet_balance", gorm.Expr("wallet_balance - ?", fee))
 		if result.Error != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(result.Error, &pgErr) && pgErr.Code == "23514" {
+				return fmt.Errorf("insufficient wallet balance")
+			}
 			return result.Error
 		}
 		if result.RowsAffected == 0 {

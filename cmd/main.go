@@ -8,6 +8,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/arpitmandhotra/api-integrator/internal/billing"
 	"github.com/arpitmandhotra/api-integrator/internal/database"
 	"github.com/arpitmandhotra/api-integrator/internal/domain"
 	"github.com/arpitmandhotra/api-integrator/internal/handlers"
@@ -25,6 +26,10 @@ func main() {
 	redisClient := database.NewRedisClient()
 	postgresClient := database.NewPostgresClient()
 
+	// Initialize billing engine database and Redis singletons
+	billing.DB = postgresClient
+	billing.Redis = redisClient
+
 	merchantKey := os.Getenv("MERCHANT_API_KEY")
 	if merchantKey == "" {
 		log.Fatal("Merchant Key's environment variable is not set")
@@ -38,10 +43,9 @@ func main() {
 	wooSecret := os.Getenv("WOOCOMMERCE_WEBHOOK_SECRET")
 	magentoSecret := os.Getenv("MAGENTO_WEBHOOK_SECRET")
 
-	// Validate HASH_PEPPER at startup — prevents silently filling the DB
-	// with weak hashes for hours until the first trust check triggers the warning.
-	if os.Getenv("HASH_PEPPER") == "" {
-		log.Fatal("CRITICAL: HASH_PEPPER environment variable is not set — phone hashes are reversible without a pepper")
+	// Validate KOTMAN_GLOBAL_PEPPER at startup
+	if os.Getenv("KOTMAN_GLOBAL_PEPPER") == "" {
+		log.Fatal("CRITICAL: KOTMAN_GLOBAL_PEPPER environment variable is not set — phone hashes are reversible without a pepper")
 	}
 
 	postgresClient.FirstOrCreate(&domain.Merchant{
@@ -61,7 +65,7 @@ func main() {
 	trustHandler := handlers.NewTrustHandler(trustSvc)
 	csvSvc := service.NewCSVImportService(postgresClient, redisClient)
 	adminHandler := handlers.NewAdminHandler(postgresClient, csvSvc)
-	webhookHandler := handlers.NewWebhookHandler(postgresClient)
+	webhookHandler := handlers.NewWebhookHandler(postgresClient, shopifySecret, wooSecret, magentoSecret)
 	oauthHandler := handlers.NewOAuthHandler(postgresClient, redisClient)
 	magentoHandler := handlers.NewMagentoOnboardHandler(postgresClient)
 
@@ -132,6 +136,12 @@ func main() {
 	adminGroup.Post("/unblock", adminHandler.GetRecentBlocks)
 	adminGroup.Post("/import-csv/validate", adminHandler.ValidateCSV)
 	adminGroup.Post("/import-csv/commit", adminHandler.CommitCSV)
+
+	// Admin Billing routes
+	adminGroup.Get("/billing/events", adminHandler.GetBillingEvents)
+	adminGroup.Get("/billing/summary", adminHandler.GetBillingSummary)
+	adminGroup.Get("/billing/invoices", adminHandler.GetInvoices)
+	adminGroup.Post("/billing/events/:event_id/override", adminHandler.OverrideEventFee)
 
 	// ==========================================
 	// 5. HEALTH CHECK & START UP

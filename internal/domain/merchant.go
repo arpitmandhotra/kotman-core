@@ -35,6 +35,12 @@ type MerchantSettings struct {
     // --- KOTMAN MANAGED WALLET ---
     WalletBalance float64 `gorm:"default:0"`
 
+    // Billing configuration
+    CheckoutMode        string `gorm:"default:'native'"` // "native" | "third_party" — merchant declares their setup
+    ThirdPartyCheckout  string `gorm:"default:''"` // "gokwik" | "shopflo" | "razorpay_magic" | ""
+    BillingCycleDay     int    `gorm:"default:1"` // day of month invoices are generated (1 = first of month)
+    AutoInvoiceEnabled  bool   `gorm:"default:true"`
+
     CreatedAt time.Time
     UpdatedAt time.Time
 }
