@@ -1,7 +1,17 @@
 package billing
 
 import (
+	"bytes"
+	"crypto/hmac"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
 	"strings"
+	"time"
 )
 
 func DetectPaymentMethod(platform string, rawPayload map[string]interface{}) string {
@@ -130,4 +140,53 @@ func DetectPaymentMethod(platform string, rawPayload map[string]interface{}) str
 		}
 		return "unknown"
 	}
+}
+
+// CreateRazorpayOrder calls Razorpay's API to construct a prepaid transaction order
+func CreateRazorpayOrder(amountPaise int64, keyID, keySecret string) (string, error) {
+	payload := map[string]interface{}{
+		"amount":   amountPaise,
+		"currency": "INR",
+	}
+	bodyBytes, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+
+	req, err := http.NewRequest("POST", "https://api.razorpay.com/v1/orders", bytes.NewBuffer(bodyBytes))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.SetBasicAuth(keyID, keySecret)
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		respBody, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("razorpay order creation failed with status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var res struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		return "", err
+	}
+
+	return res.ID, nil
+}
+
+// VerifyRazorpaySignature validates Razorpay payment signatures using HMAC-SHA256
+func VerifyRazorpaySignature(orderID, paymentID, signature, keySecret string) bool {
+	data := orderID + "|" + paymentID
+	h := hmac.New(sha256.New, []byte(keySecret))
+	h.Write([]byte(data))
+	expectedSignature := hex.EncodeToString(h.Sum(nil))
+	return subtle.ConstantTimeCompare([]byte(expectedSignature), []byte(signature)) == 1
 }

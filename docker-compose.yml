@@ -29,14 +29,17 @@ services:
     restart: unless-stopped
 
   # ==========================================
-  # KOTMAN CORE WEB APP
+  # KOTMAN CORE API SERVER
   # ==========================================
-  web:
-    build: .
+  api:
+    build:
+      context: .
+      target: api
     ports:
-      - "3000:3000"
+      - "8080:8080"
     environment:
       - DATABASE_URL=postgres://kotman:${POSTGRES_PASSWORD:-secret}@postgres:5432/kotman_db?sslmode=disable
+      - REDIS_URL=redis://redis:6379
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - KOTMAN_GLOBAL_PEPPER=K0tm@n_TrU$t_N3tw0rk_P3pp3r_2026_!xZ9
@@ -44,6 +47,26 @@ services:
     depends_on:
       - postgres
       - redis
+    restart: unless-stopped
+
+  # ==========================================
+  # KOTMAN CORE BACKGROUND WORKER
+  # ==========================================
+  worker:
+    build:
+      context: .
+      target: worker
+    environment:
+      - DATABASE_URL=postgres://kotman:${POSTGRES_PASSWORD:-secret}@postgres:5432/kotman_db?sslmode=disable
+      - REDIS_URL=redis://redis:6379
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - KOTMAN_GLOBAL_PEPPER=K0tm@n_TrU$t_N3tw0rk_P3pp3r_2026_!xZ9
+      - KOTMAN_MASTER_TWILIO_KEY=dummy
+    depends_on:
+      - postgres
+      - redis
+    restart: unless-stopped
 
 volumes:
   postgres_data:

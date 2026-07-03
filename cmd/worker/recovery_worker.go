@@ -60,6 +60,7 @@ func main() {
 
 	go worker.listenAndProcess(ctx, pubsub)
 	go worker.startTokenRefresher(ctx)
+	go StartAIIngestionWorker(ctx, redisClient, postgresClient)
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
