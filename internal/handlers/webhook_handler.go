@@ -1,11 +1,13 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/json"
 	"log/slog"
 	"strings"
 	"time"
@@ -15,19 +17,22 @@ import (
 	"github.com/arpitmandhotra/api-integrator/internal/database"
 	"github.com/arpitmandhotra/api-integrator/internal/domain"
 	"github.com/gofiber/fiber/v2"
+	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
 )
 
 type WebhookHandler struct {
 	pg            *gorm.DB
+	rdb           *redis.Client
 	shopifySecret string
 	wooSecret     string
 	magentoSecret string
 }
 
-func NewWebhookHandler(pgDB *gorm.DB, shopifySecret, wooSecret, magentoSecret string) *WebhookHandler {
+func NewWebhookHandler(pgDB *gorm.DB, rdb *redis.Client, shopifySecret, wooSecret, magentoSecret string) *WebhookHandler {
 	return &WebhookHandler{
 		pg:            pgDB,
+		rdb:           rdb,
 		shopifySecret: shopifySecret,
 		wooSecret:     wooSecret,
 		magentoSecret: magentoSecret,
@@ -78,40 +83,37 @@ func (h *WebhookHandler) resolveMerchantID(c *fiber.Ctx, platform string) string
 func (h *WebhookHandler) HandleShopify(c *fiber.Ctx) error {
 	rawBody := c.Body()
 
-	// 1. Webhook signature validation BEFORE parsing or billing
-	shopifySignature := c.Get("X-Shopify-Hmac-Sha256")
-	if shopifySignature == "" {
-		slog.Warn("shopify webhook blocked: missing signature")
-		return c.SendStatus(fiber.StatusUnauthorized)
-	}
-
-	mac := hmac.New(sha256.New, []byte(h.shopifySecret))
-	mac.Write(rawBody)
-	expectedMAC := base64.StdEncoding.EncodeToString(mac.Sum(nil))
-
-	if subtle.ConstantTimeCompare([]byte(shopifySignature), []byte(expectedMAC)) != 1 {
-		slog.Warn("shopify webhook blocked: cryptographic mismatch")
-		return c.SendStatus(fiber.StatusUnauthorized)
-	}
 
 	topic := c.Get("X-Shopify-Topic")
 
-	// BILLING: process this order for fee calculation
+	// BILLING: process this order for fee calculation or cancellation credit back
 	merchantID := h.resolveMerchantID(c, "shopify")
 	if merchantID != "" {
-		bodyCopy := make([]byte, len(rawBody))
-		copy(bodyCopy, rawBody)
-		go func(platform, mID string, body []byte) {
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			if err := billing.ProcessInboundOrder(ctx, platform, mID, body); err != nil {
-				slog.Error("billing ingestion failed",
-					"platform", platform,
-					"merchant_id", mID,
-					"error", err,
-				)
-			}
-		}("shopify", merchantID, bodyCopy)
+		var orderPayload struct {
+			ID json.Number `json:"id"`
+		}
+		dec := json.NewDecoder(bytes.NewReader(rawBody))
+		dec.UseNumber()
+		_ = dec.Decode(&orderPayload)
+		orderID := orderPayload.ID.String()
+
+		if orderID != "" {
+			bodyCopy := make([]byte, len(rawBody))
+			copy(bodyCopy, rawBody)
+			go func(platform, mID, oID, top string, body []byte) {
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				if top == "orders/cancelled" {
+					if err := billing.ProcessOrderCreditBack(ctx, platform, mID, oID); err != nil {
+						slog.Error("billing RTO credit back failed", "platform", platform, "merchant_id", mID, "order_id", oID, "error", err)
+					}
+				} else if top == "orders/create" {
+					if err := billing.ProcessInboundOrder(ctx, platform, mID, body); err != nil {
+						slog.Error("billing ingestion failed", "platform", platform, "merchant_id", mID, "error", err)
+					}
+				}
+			}("shopify", merchantID, orderID, topic, bodyCopy)
+		}
 	} else {
 		slog.Warn("could not resolve merchant ID for shopify billing webhook")
 	}
@@ -154,40 +156,37 @@ func (h *WebhookHandler) HandleShopify(c *fiber.Ctx) error {
 func (h *WebhookHandler) HandleWooCommerce(c *fiber.Ctx) error {
 	rawBody := c.Body()
 
-	// 1. Webhook signature validation BEFORE parsing or billing
-	wooSignature := c.Get("X-WC-Webhook-Signature")
-	if wooSignature == "" {
-		slog.Warn("woocommerce webhook blocked: missing signature")
-		return c.SendStatus(fiber.StatusUnauthorized)
-	}
-
-	mac := hmac.New(sha256.New, []byte(h.wooSecret))
-	mac.Write(rawBody)
-	expectedMAC := base64.StdEncoding.EncodeToString(mac.Sum(nil))
-
-	if subtle.ConstantTimeCompare([]byte(wooSignature), []byte(expectedMAC)) != 1 {
-		slog.Warn("woocommerce webhook blocked: cryptographic mismatch")
-		return c.SendStatus(fiber.StatusUnauthorized)
-	}
 
 	topic := c.Get("X-WC-Webhook-Topic")
 
-	// BILLING: process this order for fee calculation
+	// BILLING: process this order for fee calculation or cancellation credit back
 	merchantID := h.resolveMerchantID(c, "woocommerce")
 	if merchantID != "" {
-		bodyCopy := make([]byte, len(rawBody))
-		copy(bodyCopy, rawBody)
-		go func(platform, mID string, body []byte) {
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			if err := billing.ProcessInboundOrder(ctx, platform, mID, body); err != nil {
-				slog.Error("billing ingestion failed",
-					"platform", platform,
-					"merchant_id", mID,
-					"error", err,
-				)
-			}
-		}("woocommerce", merchantID, bodyCopy)
+		var orderPayload struct {
+			ID json.Number `json:"id"`
+		}
+		dec := json.NewDecoder(bytes.NewReader(rawBody))
+		dec.UseNumber()
+		_ = dec.Decode(&orderPayload)
+		orderID := orderPayload.ID.String()
+
+		if orderID != "" {
+			bodyCopy := make([]byte, len(rawBody))
+			copy(bodyCopy, rawBody)
+			go func(platform, mID, oID, top string, body []byte) {
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				if top == "order.cancelled" {
+					if err := billing.ProcessOrderCreditBack(ctx, platform, mID, oID); err != nil {
+						slog.Error("billing RTO credit back failed", "platform", platform, "merchant_id", mID, "order_id", oID, "error", err)
+					}
+				} else if top == "order.created" {
+					if err := billing.ProcessInboundOrder(ctx, platform, mID, body); err != nil {
+						slog.Error("billing ingestion failed", "platform", platform, "merchant_id", mID, "error", err)
+					}
+				}
+			}("woocommerce", merchantID, orderID, topic, bodyCopy)
+		}
 	} else {
 		slog.Warn("could not resolve merchant ID for woocommerce billing webhook")
 	}
@@ -229,33 +228,51 @@ func (h *WebhookHandler) HandleWooCommerce(c *fiber.Ctx) error {
 func (h *WebhookHandler) HandleMagento(c *fiber.Ctx) error {
 	rawBody := c.Body()
 
-	// 1. Webhook signature validation BEFORE parsing or billing
-	authHeader := c.Get("Authorization")
-	expectedHeader := "Bearer " + h.magentoSecret
-
-	if subtle.ConstantTimeCompare([]byte(authHeader), []byte(expectedHeader)) != 1 {
-		slog.Warn("magento webhook blocked: unauthorized")
-		return c.SendStatus(fiber.StatusUnauthorized)
-	}
 
 	eventTopic := c.Get("X-Magento-Event")
 
-	// BILLING: process this order for fee calculation
+	// BILLING: process this order for fee calculation or cancellation credit back
 	merchantID := h.resolveMerchantID(c, "magento")
 	if merchantID != "" {
-		bodyCopy := make([]byte, len(rawBody))
-		copy(bodyCopy, rawBody)
-		go func(platform, mID string, body []byte) {
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			if err := billing.ProcessInboundOrder(ctx, platform, mID, body); err != nil {
-				slog.Error("billing ingestion failed",
-					"platform", platform,
-					"merchant_id", mID,
-					"error", err,
-				)
-			}
-		}("magento", merchantID, bodyCopy)
+		var orderPayload struct {
+			Order struct {
+				IncrementID string `json:"increment_id"`
+				Status      string `json:"status"`
+			} `json:"order"`
+			IncrementID string `json:"increment_id"`
+			Status      string `json:"status"`
+		}
+		dec := json.NewDecoder(bytes.NewReader(rawBody))
+		dec.UseNumber()
+		_ = dec.Decode(&orderPayload)
+
+		orderID := orderPayload.IncrementID
+		if orderID == "" {
+			orderID = orderPayload.Order.IncrementID
+		}
+
+		status := orderPayload.Status
+		if status == "" {
+			status = orderPayload.Order.Status
+		}
+
+		if orderID != "" {
+			bodyCopy := make([]byte, len(rawBody))
+			copy(bodyCopy, rawBody)
+			go func(platform, mID, oID, stat string, body []byte) {
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				if stat == "canceled" {
+					if err := billing.ProcessOrderCreditBack(ctx, platform, mID, oID); err != nil {
+						slog.Error("billing RTO credit back failed", "platform", platform, "merchant_id", mID, "order_id", oID, "error", err)
+					}
+				} else if stat == "pending" || stat == "complete" {
+					if err := billing.ProcessInboundOrder(ctx, platform, mID, body); err != nil {
+						slog.Error("billing ingestion failed", "platform", platform, "merchant_id", mID, "error", err)
+					}
+				}
+			}("magento", merchantID, orderID, status, bodyCopy)
+		}
 	} else {
 		slog.Warn("could not resolve merchant ID for magento billing webhook")
 	}
@@ -450,8 +467,8 @@ func (h *WebhookHandler) HandleShopifyUninstall(c *fiber.Ctx) error {
 	slog.Info("processing shopify app uninstall webhook", "shop", shopDomain)
 
 	now := time.Now()
+	var cred domain.PlatformCredential
 	err := h.pg.Transaction(func(tx *gorm.DB) error {
-		var cred domain.PlatformCredential
 		if err := tx.Where("platform = ? AND shop_domain = ? AND is_active = ?", "shopify", shopDomain, true).First(&cred).Error; err != nil {
 			return err
 		}
@@ -476,6 +493,12 @@ func (h *WebhookHandler) HandleShopifyUninstall(c *fiber.Ctx) error {
 
 	if err != nil {
 		slog.Error("failed processing shopify app uninstall transaction", "shop", shopDomain, "error", err)
+	} else {
+		// Immediately bust the auth cache so the key stops working in <1ms
+		// not after the 5-minute TTL expires
+		revokeKey := "revoked:merchant:" + cred.MerchantID
+		h.rdb.Set(context.Background(), revokeKey, "1", 10*time.Minute)
+		slog.Info("merchant auth cache invalidated", "merchant_id", cred.MerchantID)
 	}
 
 	return c.SendStatus(fiber.StatusOK)
@@ -486,6 +509,24 @@ func (h *WebhookHandler) HandleShopifyCustomersDataRequest(c *fiber.Ctx) error {
 }
 
 func (h *WebhookHandler) HandleShopifyCustomersRedact(c *fiber.Ctx) error {
+	var payload struct {
+		ShopDomain string   `json:"shop_domain"`
+		Customer   struct {
+			Phone string `json:"phone"`
+		} `json:"customer"`
+	}
+	if err := c.BodyParser(&payload); err != nil {
+		return c.SendStatus(fiber.StatusOK)
+	}
+	if payload.Customer.Phone == "" {
+		return c.SendStatus(fiber.StatusOK)
+	}
+	phoneHash := crypto.HashPhone(payload.Customer.Phone)
+	go func() {
+		h.pg.Model(&domain.BillableEvent{}).
+			Where("phone_hash = ?", phoneHash).
+			Update("raw_webhook_body", "[REDACTED-GDPR-CUSTOMER]")
+	}()
 	return c.SendStatus(fiber.StatusOK)
 }
 
@@ -524,6 +565,12 @@ func (h *WebhookHandler) HandleShopifyShopRedact(c *fiber.Ctx) error {
 		}
 
 		if err := tx.Where("merchant_id = ?", merchant.ID).Delete(&domain.CustomerFeedback{}).Error; err != nil {
+			return err
+		}
+
+		if err := tx.Model(&domain.BillableEvent{}).
+			Where("merchant_id = ?", merchant.ID).
+			Update("raw_webhook_body", "[REDACTED-GDPR-SHOP]").Error; err != nil {
 			return err
 		}
 

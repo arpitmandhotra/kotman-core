@@ -51,6 +51,13 @@ func HashPhone(raw string) string {
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
+func HashAPIKey(rawKey string) string {
+	pepperOnce.Do(loadPepper)
+	mac := hmac.New(sha256.New, []byte(pepper))
+	mac.Write([]byte(rawKey))
+	return "v1:" + hex.EncodeToString(mac.Sum(nil))
+}
+
 
 
 // normalisePhone strips all non-digit characters,

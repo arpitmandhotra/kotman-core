@@ -104,3 +104,47 @@ func RequireRateLimit(redisClient *redis.Client) fiber.Handler {
 		return c.Next()
 	}
 }
+
+func RequireIPRateLimit(redisClient *redis.Client, limitPerMinute int) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		ip := c.IP()
+		key := "rate_limit:ip:" + ip
+
+		now := time.Now().UnixNano()
+		windowStart := now - (1 * time.Minute).Nanoseconds()
+
+		ctx, cancel := context.WithTimeout(c.UserContext(), 45*time.Millisecond)
+		defer cancel()
+
+		randBytes := make([]byte, 8)
+		rand.Read(randBytes)
+		uniqueMember := fmt.Sprintf("%d-%s", now, hex.EncodeToString(randBytes))
+
+		luaScript := redis.NewScript(`
+			redis.call('ZREMRANGEBYSCORE', KEYS[1], '0', ARGV[1])
+			redis.call('ZADD', KEYS[1], ARGV[2], ARGV[3])
+			local count = redis.call('ZCARD', KEYS[1])
+			redis.call('EXPIRE', KEYS[1], 60)
+			return count
+		`)
+
+		result, err := luaScript.Run(ctx, redisClient,
+			[]string{key},
+			fmt.Sprintf("%d", windowStart),
+			float64(now),
+			uniqueMember,
+		).Int64()
+
+		if err != nil {
+			return c.Next() // fail-open on Redis error
+		}
+
+		if int(result) > limitPerMinute {
+			slog.Warn("IP rate limit exceeded", "ip", ip, "count", result)
+			return c.Status(fiber.StatusTooManyRequests).JSON(fiber.Map{
+				"error": "Too many requests from this IP",
+			})
+		}
+		return c.Next()
+	}
+}

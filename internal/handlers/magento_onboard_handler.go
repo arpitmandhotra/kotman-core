@@ -120,11 +120,11 @@ func (h *MagentoOnboardHandler) HandleMagentoOnboard(c *fiber.Ctx) error {
 	// Transaction to insert Merchant + PlatformCredential
 	err = h.pg.Transaction(func(tx *gorm.DB) error {
 		merchant := domain.Merchant{
-			ID:        merchantID,
-			StoreName: req.StoreName,
-			APIKey:    apiKey,
-			Platform:  "magento",
-			IsActive:  true,
+			ID:         merchantID,
+			StoreName:  req.StoreName,
+			APIKeyHash: crypto.HashAPIKey(apiKey),
+			Platform:   "magento",
+			IsActive:   true,
 		}
 		if err := tx.Create(&merchant).Error; err != nil {
 			return err

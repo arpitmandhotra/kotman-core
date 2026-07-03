@@ -7,7 +7,7 @@ type Merchant struct {
 	// Your existing, highly-secure UUID setup
 	ID        string `gorm:"primaryKey;type:uuid;default:gen_random_uuid()"`
 	StoreName string `gorm:"not null"`
-	APIKey    string `gorm:"uniqueIndex;not null"`
+	APIKeyHash string `gorm:"uniqueIndex;not null"`
 
 	Platform  string `gorm:"not null;default:'shopify'"`
 	// --- V2 ONBOARDING UPGRADES ---

@@ -419,3 +419,66 @@ func ComputeFee(checkoutMode, paymentMethod string, orderValuePaise int) (bool, 
 		return true, domain.KotmanFee(orderValuePaise)
 	}
 }
+
+// ProcessOrderCreditBack handles RTO or cancelled orders by waiving the fee and crediting it back to the merchant's wallet balance.
+func ProcessOrderCreditBack(ctx context.Context, platform, merchantID, orderID string) error {
+	// Execute in a transaction to guarantee ledger consistency
+	return DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var event domain.BillableEvent
+		err := tx.Where("merchant_id = ? AND platform = ? AND order_id = ?", merchantID, platform, orderID).First(&event).Error
+		if err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				slog.Info("no matching billable event found for cancellation/RTO credit back", "merchant_id", merchantID, "platform", platform, "order_id", orderID)
+				return nil
+			}
+			return fmt.Errorf("failed to look up billable event: %w", err)
+		}
+
+		// If it's already waived/refunded or wasn't billable to begin with, no action needed
+		if !event.IsBillable || event.FeePaise == 0 {
+			slog.Info("event is not billable or already credited back, skipping", "merchant_id", merchantID, "order_id", orderID)
+			return nil
+		}
+
+		// Keep a record of the original fee before waiving
+		waivedFeePaise := event.FeePaise
+		event.IsBillable = false
+		event.FeePaise = 0
+
+		// Update event to waived state
+		if err := tx.Save(&event).Error; err != nil {
+			return fmt.Errorf("failed to update billable event: %w", err)
+		}
+
+		// Decrement accumulator totals for the month the event was created in
+		billingMonth := event.CreatedAt.Format("2006-01")
+		var accumulator domain.MerchantBillingAccumulator
+		err = tx.Where("merchant_id = ? AND billing_month = ?", merchantID, billingMonth).First(&accumulator).Error
+		if err == nil {
+			// Atomically decrement accumulator fields
+			updateRes := tx.Model(&accumulator).Updates(map[string]interface{}{
+				"total_events":    gorm.Expr("total_events - 1"),
+				"total_fee_paise": gorm.Expr("total_fee_paise - ?", waivedFeePaise),
+			})
+			if updateRes.Error != nil {
+				return fmt.Errorf("failed to decrement billing accumulator: %w", updateRes.Error)
+			}
+		}
+
+		// Refund the equivalent Rupee amount to the merchant's wallet
+		feeRupees := float64(waivedFeePaise) / 100.0
+		refundRes := tx.Model(&domain.MerchantSettings{}).
+			Where("merchant_id = ?", merchantID).
+			Update("wallet_balance", gorm.Expr("wallet_balance + ?", feeRupees))
+		if refundRes.Error != nil {
+			return fmt.Errorf("failed to credit back wallet balance: %w", refundRes.Error)
+		}
+
+		slog.Info("successfully processed cancellation/RTO credit back",
+			"merchant_id", merchantID,
+			"order_id", orderID,
+			"credited_amount_rupees", feeRupees,
+		)
+		return nil
+	})
+}

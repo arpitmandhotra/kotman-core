@@ -14,6 +14,7 @@ import (
 	postgres_driver "gorm.io/driver/postgres"
 	"gorm.io/gorm"
 
+	"github.com/arpitmandhotra/api-integrator/internal/crypto"
 	"github.com/arpitmandhotra/api-integrator/internal/domain"
 	"github.com/arpitmandhotra/api-integrator/internal/service"
 )
@@ -104,10 +105,10 @@ func TestEvaluateRisk_Integration(t *testing.T) {
 	// Create test merchant and settings
 	testMerchantID := "test-merchant-123"
 	if err := pgDB.Create(&domain.Merchant{
-		ID:        testMerchantID,
-		StoreName: "Test Integration Store",
-		APIKey:    "test_key_123",
-		IsActive:  true,
+		ID:         testMerchantID,
+		StoreName:  "Test Integration Store",
+		APIKeyHash: crypto.HashAPIKey("test_key_123"),
+		IsActive:   true,
 	}).Error; err != nil {
 		t.Fatalf("failed to seed test merchant: %s", err)
 	}
