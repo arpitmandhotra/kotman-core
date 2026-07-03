@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/arpitmandhotra/api-integrator/internal/crypto"
 	"github.com/arpitmandhotra/api-integrator/internal/database"
 	"github.com/arpitmandhotra/api-integrator/internal/domain"
+	"github.com/arpitmandhotra/api-integrator/internal/service"
 	"github.com/gofiber/fiber/v2"
 	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
@@ -582,4 +584,98 @@ func (h *WebhookHandler) HandleShopifyShopRedact(c *fiber.Ctx) error {
 	}
 
 	return c.SendStatus(fiber.StatusOK)
+}
+
+// HandleShopifyOrderCreation acts as a unified router dynamically handling shadow ingestion and active blocking
+func (h *WebhookHandler) HandleShopifyOrderCreation(c *fiber.Ctx) error {
+	apiKey := c.Get("X-API-Key")
+	if apiKey == "" {
+		apiKey = c.Query("api_key")
+	}
+	if apiKey == "" {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+			"success": false,
+			"error":   "Missing API Key",
+		})
+	}
+
+	hashedKey := crypto.HashAPIKey(apiKey)
+
+	var merchant domain.Merchant
+	if err := h.pg.WithContext(c.UserContext()).Where("api_key_hash = ?", hashedKey).First(&merchant).Error; err != nil {
+		slog.Warn("unauthorized webhook request: invalid api key hash", "hash", hashedKey)
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+			"success": false,
+			"error":   "Unauthorized: invalid API key",
+		})
+	}
+
+	rawBody := c.Body()
+
+	// Step 1: Unconditional Redis push (AI ingestion flywheel)
+	_, err := h.rdb.XAdd(c.UserContext(), &redis.XAddArgs{
+		Stream: "shadow_mode_ingestion",
+		MaxLen: 10000,
+		Approx: true,
+		Values: map[string]interface{}{
+			"api_key": apiKey,
+			"payload": string(rawBody),
+		},
+	}).Result()
+	if err != nil {
+		slog.Error("failed to push to Redis stream shadow_mode_ingestion", "error", err)
+	}
+
+	// Step 2 & 3: Check the execution mode
+	if !merchant.IsActive || time.Now().Before(merchant.ShadowModeEndsAt) {
+		return c.SendStatus(fiber.StatusOK)
+	}
+
+	// Step 4: Active Mode: Run active blocking and fraud detection rules
+	var shopifyPayload struct {
+		Customer struct {
+			Phone string `json:"phone"`
+		} `json:"customer"`
+		BillingAddress struct {
+			Phone string `json:"phone"`
+		} `json:"billing_address"`
+		BrowserIP string `json:"browser_ip"`
+		TotalPrice string `json:"total_price"`
+		SubtotalPrice string `json:"subtotal_price"`
+	}
+
+	if err := c.BodyParser(&shopifyPayload); err != nil {
+		slog.Error("failed to parse Shopify payload during active blocking", "error", err)
+		return c.JSON(fiber.Map{
+			"action": "ALLOW_COD",
+			"score":  100,
+		})
+	}
+
+	phone := shopifyPayload.Customer.Phone
+	if phone == "" {
+		phone = shopifyPayload.BillingAddress.Phone
+	}
+
+	phoneHash := crypto.HashPhone(phone)
+
+	cartValue, _ := strconv.ParseFloat(shopifyPayload.TotalPrice, 64)
+	if cartValue == 0 {
+		cartValue, _ = strconv.ParseFloat(shopifyPayload.SubtotalPrice, 64)
+	}
+
+	trustSvc := service.NewRedisTrustService(h.rdb, h.pg)
+	resp, err := trustSvc.EvaluateRisk(c.UserContext(), phoneHash, shopifyPayload.BrowserIP, merchant.ID, cartValue)
+	if err != nil {
+		slog.Error("active blocking: risk evaluation failed, failing open", "error", err)
+		return c.JSON(fiber.Map{
+			"action": "ALLOW_COD",
+			"score":  85,
+		})
+	}
+
+	return c.JSON(fiber.Map{
+		"action": resp.Action,
+		"score":  resp.Score,
+	})
 }

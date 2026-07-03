@@ -51,6 +51,7 @@ func NewPostgresClient() *gorm.DB {
 		&domain.BillableEvent{},
 		&domain.MerchantInvoice{},
 		&domain.MerchantBillingAccumulator{},
+		&domain.OrderAudit{},
 	)
 	if err != nil {
 		log.Fatalf("Failed to auto-migrate database schema: %v", err)
@@ -58,15 +59,12 @@ func NewPostgresClient() *gorm.DB {
 
 	// NEW MIGRATION: Add CHECK constraint to protect wallet balance from underflow.
 	// Since GORM maps MerchantSettings to the 'merchant_settings' table, we apply it there.
-	// We also try 'merchants' table just in case to strictly satisfy the exact SQL request.
 	var count int
 	db.Raw("SELECT count(*) FROM pg_constraint WHERE conname = 'check_positive_balance'").Scan(&count)
 	if count == 0 {
 		log.Println("📦 Adding CHECK constraint check_positive_balance to protect ledger integrity...")
-		// Try applying it to merchant_settings where the wallet_balance column is actually located in GORM
+		// Apply it to merchant_settings where the wallet_balance column is actually located in GORM
 		db.Exec("ALTER TABLE merchant_settings ADD CONSTRAINT check_positive_balance CHECK (wallet_balance >= 0)")
-		// Also try merchants table as requested
-		db.Exec("ALTER TABLE merchants ADD CONSTRAINT check_positive_balance CHECK (wallet_balance >= 0)")
 	}
 
 	log.Println("--> Successfully connected to PostgreSQL Cold Storage!")

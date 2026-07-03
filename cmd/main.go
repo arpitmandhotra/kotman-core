@@ -46,7 +46,7 @@ func main() {
 	customLog := logger.New()
 	slog.SetDefault(customLog)
 
-	slog.Info("starting RTO Intelligence API", "port", 3000)
+	slog.Info("starting RTO Intelligence API", "port", 8080)
 
 	// ==========================================
 	// 2. THE SERVICE & HANDLER LAYER
@@ -58,6 +58,9 @@ func main() {
 	webhookHandler := handlers.NewWebhookHandler(postgresClient, redisClient, shopifySecret, wooSecret, magentoSecret)
 	oauthHandler := handlers.NewOAuthHandler(postgresClient, redisClient)
 	magentoHandler := handlers.NewMagentoOnboardHandler(postgresClient)
+	analyticsHandler := handlers.NewAnalyticsHandler(postgresClient)
+	onboardingHandler := handlers.NewOnboardingHandler(postgresClient)
+	billingHandler := handlers.NewBillingHandler(postgresClient)
 
 	// ==========================================
 	// 3. THE ROUTER & MIDDLEWARE LAYER
@@ -112,6 +115,7 @@ func main() {
 	// ==========================================
 
 	// Public Onboarding Routes (Shopify & WooCommerce OAuth)
+	app.Post("/v1/merchants/register", ipLimiter, onboardingHandler.RegisterMerchant)
 	app.Get("/auth/shopify/install", ipLimiter, oauthHandler.HandleShopifyInstall)
 	app.Get("/auth/shopify/callback", ipLimiter, oauthHandler.HandleShopifyCallback)
 	app.Get("/auth/woocommerce/start", ipLimiter, oauthHandler.HandleWooCommerceAuthStart)
@@ -121,6 +125,9 @@ func main() {
 	// DOOR B: The Omni-Channel Webhook Listeners
 	webhookGroup := app.Group("/v1/webhooks")
 	
+	// Unified Webhook Router
+	webhookGroup.Post("/shopify/orders", middleware.RequireShopifyHMAC(shopifySecret), webhookHandler.HandleShopifyOrderCreation)
+
 	// Shopify is our primary driver; it MUST have a secret.
 	webhookGroup.Post("/shopify", middleware.RequireShopifyHMAC(shopifySecret), webhookHandler.HandleShopify)
 	webhookGroup.Post("/shopify/review", middleware.RequireShopifyHMAC(shopifySecret), webhookHandler.HandleProductReview)
@@ -145,6 +152,21 @@ func main() {
 		middleware.RequireAPIKey(postgresClient, redisClient),
 		middleware.RequireRateLimit(redisClient),
 		trustHandler.HandleTrustScore,
+	)
+
+	app.Get("/v1/merchants/insights",
+		middleware.RequireAPIKey(postgresClient, redisClient),
+		analyticsHandler.GetMerchantInsights,
+	)
+
+	// Razorpay Billing Integration
+	app.Post("/v1/billing/order",
+		middleware.RequireAPIKey(postgresClient, redisClient),
+		billingHandler.CreateWalletTopUp,
+	)
+	app.Post("/v1/billing/verify",
+		middleware.RequireAPIKey(postgresClient, redisClient),
+		billingHandler.VerifyPaymentAndActivate,
 	)
 
 	// DOOR C: Private Admin Backdoor 
@@ -192,8 +214,8 @@ func main() {
 
 	// Run server in a goroutine so it doesn't block the signal listener
 	go func() {
-		slog.Info("Starting RTO Intelligence API on port 3000...")
-		if err := app.Listen(":3000"); err != nil {
+		slog.Info("Starting RTO Intelligence API on port 8080...")
+		if err := app.Listen(":8080"); err != nil {
 			slog.Error("Server failed to start", "error", err)
 			os.Exit(1)
 		}

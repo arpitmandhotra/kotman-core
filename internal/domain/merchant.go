@@ -13,9 +13,31 @@ type Merchant struct {
 	// --- V2 ONBOARDING UPGRADES ---
 	IsActive  bool      `gorm:"default:true"` // Allows us to disable bad merchants
 	
+	// --- SHADOW MODE FEATURE ---
+	ShadowModeEndsAt time.Time `gorm:"index"`
+
 	// Standard tracking timestamps
 	CreatedAt time.Time
 	UpdatedAt time.Time
+}
+
+type ExecutionMode string
+
+const (
+	ExecutionModeShadow ExecutionMode = "SHADOW"
+	ExecutionModeActive ExecutionMode = "ACTIVE"
+)
+
+// OrderAudit stores passively ingested payload for AI training in Shadow/Active modes
+type OrderAudit struct {
+	ID                 string        `gorm:"primaryKey;type:uuid;default:gen_random_uuid()"`
+	MerchantID         string        `gorm:"index;not null"`
+	OrderID            string        `gorm:"index;not null"`
+	RawPayload         string        `gorm:"type:jsonb;not null"`
+	PredictedRiskScore float64       `gorm:"not null"`
+	ExecutionMode      ExecutionMode `gorm:"type:varchar(20);not null"`
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
 }
 type MerchantSettings struct {
     ID         string `gorm:"primaryKey;type:uuid;default:gen_random_uuid()"`
@@ -80,4 +102,16 @@ type BackfilledOrder struct {
 	Platform   string    `gorm:"not null"`
 	OrderID    string    `gorm:"uniqueIndex:idx_merchant_order;not null"`
 	CreatedAt  time.Time
+}
+
+type InsightsResponse struct {
+	TotalOrdersAnalyzed       int     `json:"total_orders_analyzed"`
+	HighRiskOrdersFlagged     int     `json:"high_risk_orders_flagged"`
+	EstimatedLossPrevented     float64 `json:"estimated_loss_prevented"`
+	ExecutionMode             string  `json:"execution_mode"`
+	DaysRemainingInShadowMode int     `json:"days_remaining_in_shadow_mode"`
+	ShouldShowUpgradePrompt   bool    `json:"should_show_upgrade_prompt"`
+	DaysPastShadowMode        int     `json:"days_past_shadow_mode"`
+	ThreeDayTrailingLoss      float64 `json:"three_day_trailing_loss"`
+	ProjectedMonthlyLoss      float64 `json:"projected_monthly_loss"`
 }
