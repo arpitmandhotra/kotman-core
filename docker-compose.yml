@@ -28,5 +28,22 @@ services:
       - "127.0.0.1:6379:6379"
     restart: unless-stopped
 
+  # ==========================================
+  # KOTMAN CORE WEB APP
+  # ==========================================
+  web:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      - DATABASE_URL=postgres://kotman:${POSTGRES_PASSWORD:-secret}@postgres:5432/kotman_db?sslmode=disable
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - KOTMAN_GLOBAL_PEPPER=K0tm@n_TrU$t_N3tw0rk_P3pp3r_2026_!xZ9
+      - SHOPIFY_API_SECRET=dummy
+    depends_on:
+      - postgres
+      - redis
+
 volumes:
   postgres_data:

@@ -5,12 +5,12 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/arpitmandhotra/api-integrator/internal/billing"
 	"github.com/arpitmandhotra/api-integrator/internal/database"
-	"github.com/arpitmandhotra/api-integrator/internal/domain"
 	"github.com/arpitmandhotra/api-integrator/internal/handlers"
 	"github.com/arpitmandhotra/api-integrator/internal/logger"
 	"github.com/arpitmandhotra/api-integrator/internal/middleware"
@@ -23,18 +23,13 @@ func main() {
 	// ==========================================
 	// 1. THE DATABASE LAYER
 	// ==========================================
-	redisClient := database.NewRedisClient()
 	postgresClient := database.NewPostgresClient()
+	redisClient := database.NewRedisClient()
 
 	// Initialize billing engine database and Redis singletons
 	billing.DB = postgresClient
 	billing.Redis = redisClient
 
-	merchantKey := os.Getenv("MERCHANT_API_KEY")
-	if merchantKey == "" {
-		log.Fatal("Merchant Key's environment variable is not set")
-	}
-	
 	// Secrets for our Webhook Doors
 	shopifySecret := os.Getenv("SHOPIFY_API_SECRET")
 	if shopifySecret == "" {
@@ -48,11 +43,6 @@ func main() {
 		log.Fatal("CRITICAL: KOTMAN_GLOBAL_PEPPER environment variable is not set — phone hashes are reversible without a pepper")
 	}
 
-	postgresClient.FirstOrCreate(&domain.Merchant{
-		StoreName: "Arpit's Test Store",
-		APIKey:    merchantKey,
-	}, domain.Merchant{APIKey: merchantKey})
-
 	customLog := logger.New()
 	slog.SetDefault(customLog)
 
@@ -65,7 +55,7 @@ func main() {
 	trustHandler := handlers.NewTrustHandler(trustSvc)
 	csvSvc := service.NewCSVImportService(postgresClient, redisClient)
 	adminHandler := handlers.NewAdminHandler(postgresClient, csvSvc)
-	webhookHandler := handlers.NewWebhookHandler(postgresClient, shopifySecret, wooSecret, magentoSecret)
+	webhookHandler := handlers.NewWebhookHandler(postgresClient, redisClient, shopifySecret, wooSecret, magentoSecret)
 	oauthHandler := handlers.NewOAuthHandler(postgresClient, redisClient)
 	magentoHandler := handlers.NewMagentoOnboardHandler(postgresClient)
 
@@ -85,18 +75,48 @@ func main() {
 		AllowMethods: "GET, POST, OPTIONS",
 	}))
 
+	app.Use(func(c *fiber.Ctx) error {
+		// Do not add security headers to webhooks to avoid parsing failures in legacy integrations
+		if strings.HasPrefix(c.Path(), "/v1/webhooks") {
+			return c.Next()
+		}
+		c.Set("X-Frame-Options", "DENY")
+		c.Set("X-Content-Type-Options", "nosniff")
+		c.Set("X-XSS-Protection", "1; mode=block")
+		c.Set("Referrer-Policy", "strict-origin-when-cross-origin")
+		c.Set("Strict-Transport-Security", "max-age=63072000; includeSubDomains; preload")
+		c.Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
+		c.Set("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
+
+		// Safely handle X-Request-ID and type assertion to avoid panics if requestid locals is nil
+		reqID := c.Get("X-Request-ID")
+		if reqID == "" {
+			if lIDVal := c.Locals("requestid"); lIDVal != nil {
+				if lIDStr, ok := lIDVal.(string); ok {
+					reqID = lIDStr
+				}
+			}
+		}
+		if reqID != "" {
+			c.Set("X-Request-ID", reqID)
+		}
+		return c.Next()
+	})
+
 	app.Use(middleware.RequestLogger(customLog))
+
+	ipLimiter := middleware.RequireIPRateLimit(redisClient, 20)
 
 	// ==========================================
 	// 4. THE ROUTES
 	// ==========================================
 
 	// Public Onboarding Routes (Shopify & WooCommerce OAuth)
-	app.Get("/auth/shopify/install", oauthHandler.HandleShopifyInstall)
-	app.Get("/auth/shopify/callback", oauthHandler.HandleShopifyCallback)
-	app.Get("/auth/woocommerce/start", oauthHandler.HandleWooCommerceAuthStart)
-	app.Post("/auth/woocommerce/callback", oauthHandler.HandleWooCommerceCallback)
-	app.Get("/auth/woocommerce/return", oauthHandler.HandleWooCommerceReturn)
+	app.Get("/auth/shopify/install", ipLimiter, oauthHandler.HandleShopifyInstall)
+	app.Get("/auth/shopify/callback", ipLimiter, oauthHandler.HandleShopifyCallback)
+	app.Get("/auth/woocommerce/start", ipLimiter, oauthHandler.HandleWooCommerceAuthStart)
+	app.Post("/auth/woocommerce/callback", ipLimiter, oauthHandler.HandleWooCommerceCallback)
+	app.Get("/auth/woocommerce/return", ipLimiter, oauthHandler.HandleWooCommerceReturn)
 
 	// DOOR B: The Omni-Channel Webhook Listeners
 	webhookGroup := app.Group("/v1/webhooks")
@@ -129,6 +149,7 @@ func main() {
 
 	// DOOR C: Private Admin Backdoor 
 	adminGroup := app.Group("/v1/admin")
+	adminGroup.Use(middleware.RequireIPRateLimit(redisClient, 30))
 	adminGroup.Use(middleware.RequireAdminKey())
 
 	adminGroup.Post("/onboard", adminHandler.OnboardMerchant)

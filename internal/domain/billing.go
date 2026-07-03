@@ -19,7 +19,7 @@ type BillableEvent struct {
 	IsBillable      bool       `gorm:"not null;default:false"`
 	BilledAt        *time.Time `gorm:"index"` // nil until invoiced
 	InvoiceID       string     `gorm:"index;default:''"`
-	RawWebhookBody  string     `gorm:"type:text"` // store the raw JSON for dispute resolution — never redact this
+	RawWebhookBody  string     `gorm:"type:text"` // stores raw JSON for dispute resolution; MUST be redacted via GDPR webhooks. Only FeePaise, OrderValuePaise, PhoneHash, and CheckoutMode are permanent.
 	PhoneHash       string     `gorm:"index"`     // for cross-referencing TrustProfile
 	RequiresReview  bool       `gorm:"default:false"`
 	CreatedAt       time.Time  `gorm:"index"`

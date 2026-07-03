@@ -11,6 +11,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	"log/slog"
+	"github.com/arpitmandhotra/api-integrator/internal/crypto"
 	"github.com/arpitmandhotra/api-integrator/internal/domain"
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
@@ -34,7 +35,9 @@ func RequireAPIKey(pg *gorm.DB, redisClient *redis.Client) fiber.Handler {
 		// ⏱️ Start the 45ms countdown timer
 		ctx, cancel := context.WithTimeout(c.UserContext(), 45*time.Millisecond)
 		defer cancel() // CRITICAL: Destroy timer to prevent memory leaks
-		cacheKey := "auth:apikey:" + apiKey
+		
+		hashedKey := crypto.HashAPIKey(apiKey)
+		cacheKey := "auth:apikey:" + hashedKey
 
 		// ==========================================
 		// THE FAST PATH: Check Redis First
@@ -47,6 +50,17 @@ func RequireAPIKey(pg *gorm.DB, redisClient *redis.Client) fiber.Handler {
 				// V2 SECURITY: Ensure the cached merchant hasn't been deactivated
 				if !merchant.IsActive {
 					slog.Warn("auth blocked inactive key in cache", "ip", c.IP())
+					return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+						"success": false,
+						"error":   "API Key deactivated. Access Denied.",
+					})
+				}
+
+				revokeKey := "revoked:merchant:" + merchant.ID
+				revoked, _ := redisClient.Get(c.UserContext(), revokeKey).Result()
+				if revoked == "1" {
+					slog.Warn("auth blocked: merchant revoked since cache was populated",
+						"merchant_id", merchant.ID, "ip", c.IP())
 					return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
 						"success": false,
 						"error":   "API Key deactivated. Access Denied.",
@@ -66,7 +80,7 @@ func RequireAPIKey(pg *gorm.DB, redisClient *redis.Client) fiber.Handler {
 		var merchant domain.Merchant
 		
 		// V2 SECURITY: We now explicitly check that is_active = true in the database
-		err = pg.WithContext(ctx).Where("api_key = ? AND is_active = ?", apiKey, true).First(&merchant).Error
+		err = pg.WithContext(ctx).Where("api_key_hash = ? AND is_active = ?", hashedKey, true).First(&merchant).Error
 		
 		if err != nil {
 			slog.Warn("auth blocked invalid or inactive key", "ip", c.IP())
@@ -78,7 +92,7 @@ func RequireAPIKey(pg *gorm.DB, redisClient *redis.Client) fiber.Handler {
 
 		// Defense-in-depth: constant-time comparison prevents Go-level timing leak
 		// even though the Postgres index lookup itself is not constant-time.
-		if subtle.ConstantTimeCompare([]byte(apiKey), []byte(merchant.APIKey)) != 1 {
+		if subtle.ConstantTimeCompare([]byte(hashedKey), []byte(merchant.APIKeyHash)) != 1 {
 			slog.Warn("auth key mismatch after db lookup", "ip", c.IP())
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
 				"success": false,

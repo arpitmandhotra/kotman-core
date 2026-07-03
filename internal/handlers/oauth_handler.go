@@ -153,14 +153,18 @@ func (h *OAuthHandler) HandleShopifyCallback(c *fiber.Ctx) error {
 			if err := tx.Where("id = ?", cred.MerchantID).First(&merchant).Error; err != nil {
 				return err
 			}
+			merchant.APIKeyHash = crypto.HashAPIKey(apiKey)
+			if err := tx.Save(&merchant).Error; err != nil {
+				return err
+			}
 		} else if errors.Is(err, gorm.ErrRecordNotFound) {
 			// Create new Merchant
 			merchant = domain.Merchant{
-				ID:        uuid.New().String(),
-				StoreName: shop,
-				APIKey:    apiKey,
-				Platform:  "shopify",
-				IsActive:  true,
+				ID:         uuid.New().String(),
+				StoreName:  shop,
+				APIKeyHash: crypto.HashAPIKey(apiKey),
+				Platform:   "shopify",
+				IsActive:   true,
 			}
 			if err := tx.Create(&merchant).Error; err != nil {
 				return err
@@ -213,9 +217,9 @@ func (h *OAuthHandler) HandleShopifyCallback(c *fiber.Ctx) error {
 	})
 
 	if err != nil {
-		slog.Error("failed database transaction inside oauth callback", "error", err)
+		slog.Error("failed transaction during oauth callback", "shop", shop, "error", err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "database transaction failed",
+			"error": "database persistence failed",
 		})
 	}
 
@@ -233,7 +237,7 @@ func (h *OAuthHandler) HandleShopifyCallback(c *fiber.Ctx) error {
 	if welcomeURL == "" {
 		welcomeURL = "http://localhost:3000/welcome"
 	}
-	return c.Redirect(fmt.Sprintf("%s#api_key=%s", welcomeURL, merchant.APIKey))
+	return c.Redirect(fmt.Sprintf("%s#api_key=%s", welcomeURL, apiKey))
 }
 
 // -----------------------------------------------------------------------------
@@ -369,11 +373,11 @@ func (h *OAuthHandler) HandleWooCommerceCallback(c *fiber.Ctx) error {
 	// Transaction to insert Merchant + PlatformCredential
 	err = h.pg.Transaction(func(tx *gorm.DB) error {
 		merchant := domain.Merchant{
-			ID:        merchantID,
-			StoreName: expectedStoreURL,
-			APIKey:    apiKey,
-			Platform:  "woocommerce",
-			IsActive:  true,
+			ID:         merchantID,
+			StoreName:  expectedStoreURL,
+			APIKeyHash: crypto.HashAPIKey(apiKey),
+			Platform:   "woocommerce",
+			IsActive:   true,
 		}
 		if err := tx.Create(&merchant).Error; err != nil {
 			return err

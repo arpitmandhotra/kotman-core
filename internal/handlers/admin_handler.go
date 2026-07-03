@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/arpitmandhotra/api-integrator/internal/crypto"
 	"github.com/arpitmandhotra/api-integrator/internal/domain"
 	"github.com/arpitmandhotra/api-integrator/internal/service"
 
@@ -157,9 +158,9 @@ func (h *AdminHandler) OnboardMerchant(c *fiber.Ctx) error {
 
 	// 3. Assemble the updated Merchant schema
 	merchant := domain.Merchant{
-		StoreName: req.StoreName,
-		APIKey:    apiKey,
-		IsActive:  true,
+		StoreName:  req.StoreName,
+		APIKeyHash: crypto.HashAPIKey(apiKey),
+		IsActive:   true,
 	}
 
 	// 4. Persistence execution
@@ -174,7 +175,7 @@ func (h *AdminHandler) OnboardMerchant(c *fiber.Ctx) error {
 		"message":     "Merchant registered successfully",
 		"merchant_id": merchant.ID,
 		"store_name":  merchant.StoreName,
-		"api_key":     merchant.APIKey,
+		"api_key":     apiKey, // Store this — it cannot be recovered after this response
 	})
 }
 

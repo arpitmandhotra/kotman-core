@@ -64,5 +64,13 @@ func main() {
 		log.Fatalf("❌ Failed to migrate MerchantBillingAccumulator: %v", err)
 	}
 
+	// 3. One-time warning check for unhashed legacy API keys
+	var unhashedMerchants []domain.Merchant
+	if err := db.Where("api_key_hash IS NULL OR api_key_hash = ''").Find(&unhashedMerchants).Error; err == nil {
+		for _, m := range unhashedMerchants {
+			log.Printf("⚠️ WARNING: Cannot auto-hash existing keys for merchant %s (ID: %s) — raw keys are not recoverable from the DB. Rotate these keys manually via /v1/admin/onboard", m.StoreName, m.ID)
+		}
+	}
+
 	log.Println("✅ Database schema perfectly synchronized. Safe to deploy.")
 }

@@ -38,4 +38,13 @@ func main() {
 	}
 
 	slog.Info("hard purge complete", "rows_purged", result.RowsAffected, "cutoff", cutoff)
+
+	result2 := pg.Model(&domain.BillableEvent{}).
+		Where("created_at < ? AND raw_webhook_body != '' AND raw_webhook_body NOT LIKE '[REDACTED%'", cutoff).
+		Update("raw_webhook_body", "[REDACTED-PURGE]")
+	if result2.Error != nil {
+		slog.Error("billable event redaction failed", "error", result2.Error)
+		os.Exit(1)
+	}
+	slog.Info("billable event PII redacted", "rows_redacted", result2.RowsAffected)
 }

@@ -14,9 +14,10 @@ func NewPostgresClient() *gorm.DB {
 	// 1. Try to fetch the secure Neon URL from AWS
 	dsn := os.Getenv("DATABASE_URL")
 
-	// 2. If it's empty, use your exact local Kotman configuration
+	// 2. If it's empty, fail immediately
 	if dsn == "" {
-		dsn = "host=localhost user=kotman password=secret dbname=kotman_db port=5432 sslmode=disable TimeZone=Asia/Kolkata"
+		log.Fatal("CRITICAL: DATABASE_URL environment variable is not set. " +
+			"For local dev, set: DATABASE_URL=postgres://kotman:yourpassword@localhost:5432/kotman_db?sslmode=disable")
 	}
 
 	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
