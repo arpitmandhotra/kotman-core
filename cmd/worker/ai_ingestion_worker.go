@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/arpitmandhotra/api-integrator/internal/crypto"
 	"github.com/arpitmandhotra/api-integrator/internal/domain"
 	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
@@ -71,21 +70,19 @@ func (w *AIIngestionWorker) startConsuming(ctx context.Context) {
 }
 
 func (w *AIIngestionWorker) processMessage(ctx context.Context, msg redis.XMessage) {
-	apiKeyVal, _ := msg.Values["api_key"].(string)
+	merchantIDVal, _ := msg.Values["merchant_id"].(string)
 	payloadVal, _ := msg.Values["payload"].(string)
 
-	if apiKeyVal == "" {
-		slog.Warn("skipping message: missing api_key in stream message", "message_id", msg.ID)
+	if merchantIDVal == "" {
+		slog.Warn("skipping message: missing merchant_id in stream message", "message_id", msg.ID)
 		w.acknowledgeMessage(ctx, msg.ID)
 		return
 	}
 
-	hashedKey := crypto.HashAPIKey(apiKeyVal)
-
 	var merchant domain.Merchant
-	err := w.pg.WithContext(ctx).Where("api_key_hash = ?", hashedKey).First(&merchant).Error
+	err := w.pg.WithContext(ctx).Where("id = ?", merchantIDVal).First(&merchant).Error
 	if err != nil {
-		slog.Warn("merchant not found or database error matching key", "message_id", msg.ID, "error", err)
+		slog.Warn("merchant not found or database error matching ID", "message_id", msg.ID, "error", err)
 		w.acknowledgeMessage(ctx, msg.ID)
 		return
 	}

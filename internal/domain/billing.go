@@ -70,3 +70,24 @@ func KotmanFee(orderValuePaise int) int {
 		return 10000 // > ₹10,000 → ₹100.00
 	}
 }
+
+// MerchantSubscription tracks flat-fee monthly module subscriptions.
+// One row per merchant per module. Updated on renewal.
+type MerchantSubscription struct {
+	gorm.Model
+	MerchantID         string     `gorm:"uniqueIndex:idx_merchant_module;not null"`
+	Module             string     `gorm:"uniqueIndex:idx_merchant_module;not null"` // "cross_network" | "crm_upsell"
+	Status             string     `gorm:"default:'inactive'"` // "active" | "inactive" | "cancelled"
+	PriceINR           int        `gorm:"not null"`           // 4999 for both modules
+	RazorpaySubID      string     `gorm:"default:''"`         // Razorpay subscription ID if recurring
+	RazorpayOrderID    string     `gorm:"default:''"`         // for one-time payment flow
+	CurrentPeriodStart *time.Time
+	CurrentPeriodEnd   *time.Time
+	CancelledAt        *time.Time
+}
+
+// Module name constants
+const (
+	ModuleCrossNetwork = "cross_network"
+	ModuleCRMUpsell    = "crm_upsell"
+)

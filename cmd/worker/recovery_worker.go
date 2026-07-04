@@ -245,27 +245,38 @@ func (w *RecoveryWorker) executeRouting(
 ) {
 	// TIER 1: CRM connector
 	if settings.CRMProvider != "" && settings.CRMAPIKey != "" {
-		connector, err := crm.NewConnector(
-			settings.CRMProvider,
-			settings.CRMAPIKey,
-			settings.CRMAccountID,
-		)
-		if err != nil {
-			slog.Error("CRM connector init failed",
-				"provider", settings.CRMProvider,
-				"error", err,
-			)
-			// Fall through to Tier 2
-		} else {
-			if err := connector.SyncRiskEvent(ctx, event); err != nil {
-				slog.Error("CRM sync failed — falling through to direct WhatsApp",
-					"crm", connector.Name(),
-					"error", err,
+		// CRM push gate — only fire if merchant has the CRM Upsell Engine module active
+		var merchantForCRM domain.Merchant
+		if err := w.pg.WithContext(ctx).Select("has_crm_upsell_engine, id").
+			Where("id = ?", settings.MerchantID).First(&merchantForCRM).Error; err == nil {
+			if merchantForCRM.HasCRMUpsellEngine {
+				connector, err := crm.NewConnector(
+					settings.CRMProvider,
+					settings.CRMAPIKey,
+					settings.CRMAccountID,
 				)
-				// Fall through to Tier 2
+				if err != nil {
+					slog.Error("CRM connector init failed",
+						"provider", settings.CRMProvider,
+						"error", err,
+					)
+					// Fall through to Tier 2
+				} else {
+					if err := connector.SyncRiskEvent(ctx, event); err != nil {
+						slog.Error("CRM sync failed — falling through to direct WhatsApp",
+							"crm", connector.Name(),
+							"error", err,
+						)
+						// Fall through to Tier 2
+					} else {
+						return // CRM handled it — done
+					}
+				}
 			} else {
-				return // CRM handled it — done
+				slog.Info("CRM push skipped: CRM Upsell Engine module not active for merchant", "merchant_id", settings.MerchantID)
 			}
+		} else {
+			slog.Error("failed to query merchant for CRM push gate", "merchant_id", settings.MerchantID, "error", err)
 		}
 	}
 
@@ -281,8 +292,8 @@ func (w *RecoveryWorker) executeRouting(
 	}
 
 	// TIER 3: Kotman managed wallet
-	const messageCost = 1.00
-	if settings.WalletBalance >= messageCost {
+	const messageCostPaise = 100
+	if settings.WalletBalancePaise >= messageCostPaise {
 		slog.Info("routing via Kotman managed wallet", "merchant_id", settings.MerchantID)
 
 		masterKey := os.Getenv("KOTMAN_MASTER_TWILIO_KEY")
@@ -294,8 +305,8 @@ func (w *RecoveryWorker) executeRouting(
 		// Atomic wallet deduction — only deducts if balance is still sufficient.
 		// RowsAffected == 0 means another goroutine already spent the balance.
 		result := w.pg.Model(settings).
-			Where("wallet_balance >= ?", messageCost).
-			Update("wallet_balance", gorm.Expr("wallet_balance - ?", messageCost))
+			Where("wallet_balance_paise >= ?", messageCostPaise).
+			Update("wallet_balance_paise", gorm.Expr("wallet_balance_paise - ?", messageCostPaise))
 
 		if result.Error != nil || result.RowsAffected == 0 {
 			slog.Warn("wallet deduction failed or insufficient balance",

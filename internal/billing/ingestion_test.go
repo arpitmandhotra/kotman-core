@@ -19,7 +19,7 @@ type TestMerchantSettings struct {
 	ThirdPartyCheckout string    `gorm:"default:''"`
 	BillingCycleDay    int       `gorm:"default:1"`
 	AutoInvoiceEnabled bool      `gorm:"default:true"`
-	WalletBalance      float64   `gorm:"default:0"`
+	WalletBalancePaise int       `gorm:"default:0;column:wallet_balance_paise"`
 }
 
 func (TestMerchantSettings) TableName() string {
@@ -55,7 +55,7 @@ func TestProcessInboundOrder_IdempotencyAndAccumulator(t *testing.T) {
 		ThirdPartyCheckout: "",
 		BillingCycleDay:    1,
 		AutoInvoiceEnabled: true,
-		WalletBalance:      100.0,
+		WalletBalancePaise: 10000,
 	}
 	if err := db.Create(&mSettings).Error; err != nil {
 		t.Fatalf("failed to seed merchant settings: %v", err)
@@ -164,7 +164,7 @@ func TestProcessOrderCreditBack(t *testing.T) {
 		ID:                 "settings-456",
 		MerchantID:         merchantID,
 		CheckoutMode:       "native",
-		WalletBalance:      100.0,
+		WalletBalancePaise: 10000,
 	}
 	if err := db.Create(&mSettings).Error; err != nil {
 		t.Fatalf("failed to seed merchant settings: %v", err)
@@ -189,8 +189,8 @@ func TestProcessOrderCreditBack(t *testing.T) {
 	// Verify balance was deducted (100.0 - 5.0 = 95.0)
 	var settings TestMerchantSettings
 	db.Where("merchant_id = ?", merchantID).First(&settings)
-	if settings.WalletBalance != 95.0 {
-		t.Errorf("expected wallet balance to be 95.0 after charge, got %f", settings.WalletBalance)
+	if settings.WalletBalancePaise != 9500 {
+		t.Errorf("expected wallet balance to be 9500 after charge, got %d", settings.WalletBalancePaise)
 	}
 
 	// 2. Process credit back (RTO/Cancellation)
@@ -201,8 +201,8 @@ func TestProcessOrderCreditBack(t *testing.T) {
 
 	// Verify balance was refunded (95.0 + 5.0 = 100.0)
 	db.Where("merchant_id = ?", merchantID).First(&settings)
-	if settings.WalletBalance != 100.0 {
-		t.Errorf("expected wallet balance to be restored to 100.0 after credit back, got %f", settings.WalletBalance)
+	if settings.WalletBalancePaise != 10000 {
+		t.Errorf("expected wallet balance to be restored to 10000 after credit back, got %d", settings.WalletBalancePaise)
 	}
 
 	// Verify BillableEvent is marked as not billable and has fee = 0

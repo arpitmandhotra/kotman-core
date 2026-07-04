@@ -3,10 +3,6 @@ package handlers
 import (
 	"bytes"
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"crypto/subtle"
-	"encoding/base64"
 	"encoding/json"
 	"log/slog"
 	"strconv"
@@ -41,7 +37,9 @@ func NewWebhookHandler(pgDB *gorm.DB, rdb *redis.Client, shopifySecret, wooSecre
 	}
 }
 
-// resolveMerchantID locates the Merchant ID associated with the incoming webhook platform request
+// resolveMerchantID locates the Merchant ID associated with the incoming webhook platform request.
+// WooCommerce requires the X-Wc-Webhook-Source header to be present (configured during WooCommerce webhook setup)
+// and Magento requires X-Kotman-Merchant-Domain set via the Magento integration configuration.
 func (h *WebhookHandler) resolveMerchantID(c *fiber.Ctx, platform string) string {
 	var shopDomain string
 	switch platform {
@@ -50,10 +48,10 @@ func (h *WebhookHandler) resolveMerchantID(c *fiber.Ctx, platform string) string
 	case "woocommerce":
 		shopDomain = c.Get("X-Wc-Webhook-Source")
 		if shopDomain == "" {
-			shopDomain = c.BaseURL()
+			return "" // require X-Wc-Webhook-Source; reject if missing
 		}
 	case "magento":
-		shopDomain = c.BaseURL()
+		shopDomain = c.Get("X-Kotman-Merchant-Domain")
 	}
 
 	if shopDomain == "" {
@@ -103,6 +101,11 @@ func (h *WebhookHandler) HandleShopify(c *fiber.Ctx) error {
 			bodyCopy := make([]byte, len(rawBody))
 			copy(bodyCopy, rawBody)
 			go func(platform, mID, oID, top string, body []byte) {
+				defer func() {
+					if r := recover(); r != nil {
+						slog.Error("panic recovered in billing goroutine", "panic", r, "merchant_id", mID)
+					}
+				}()
 				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer cancel()
 				if top == "orders/cancelled" {
@@ -176,6 +179,11 @@ func (h *WebhookHandler) HandleWooCommerce(c *fiber.Ctx) error {
 			bodyCopy := make([]byte, len(rawBody))
 			copy(bodyCopy, rawBody)
 			go func(platform, mID, oID, top string, body []byte) {
+				defer func() {
+					if r := recover(); r != nil {
+						slog.Error("panic recovered in billing goroutine", "panic", r, "merchant_id", mID)
+					}
+				}()
 				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer cancel()
 				if top == "order.cancelled" {
@@ -262,13 +270,18 @@ func (h *WebhookHandler) HandleMagento(c *fiber.Ctx) error {
 			bodyCopy := make([]byte, len(rawBody))
 			copy(bodyCopy, rawBody)
 			go func(platform, mID, oID, stat string, body []byte) {
+				defer func() {
+					if r := recover(); r != nil {
+						slog.Error("panic recovered in billing goroutine", "panic", r, "merchant_id", mID)
+					}
+				}()
 				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer cancel()
 				if stat == "canceled" {
 					if err := billing.ProcessOrderCreditBack(ctx, platform, mID, oID); err != nil {
 						slog.Error("billing RTO credit back failed", "platform", platform, "merchant_id", mID, "order_id", oID, "error", err)
 					}
-				} else if stat == "pending" || stat == "complete" {
+				} else if stat == "pending" {
 					if err := billing.ProcessInboundOrder(ctx, platform, mID, body); err != nil {
 						slog.Error("billing ingestion failed", "platform", platform, "merchant_id", mID, "error", err)
 					}
@@ -320,24 +333,6 @@ func (h *WebhookHandler) HandleMagento(c *fiber.Ctx) error {
 // 4. INTENT-WEIGHTED FEEDBACK INGESTION
 // ==========================================
 func (h *WebhookHandler) HandleProductReview(c *fiber.Ctx) error {
-	rawBody := c.Body()
-
-	// 1. Webhook signature validation BEFORE parsing or billing
-	shopifySignature := c.Get("X-Shopify-Hmac-Sha256")
-	if shopifySignature == "" {
-		slog.Warn("shopify review webhook blocked: missing signature")
-		return c.SendStatus(fiber.StatusUnauthorized)
-	}
-
-	mac := hmac.New(sha256.New, []byte(h.shopifySecret))
-	mac.Write(rawBody)
-	expectedMAC := base64.StdEncoding.EncodeToString(mac.Sum(nil))
-
-	if subtle.ConstantTimeCompare([]byte(shopifySignature), []byte(expectedMAC)) != 1 {
-		slog.Warn("shopify review webhook blocked: cryptographic mismatch")
-		return c.SendStatus(fiber.StatusUnauthorized)
-	}
-
 	var payload struct {
 		Customer struct {
 			Phone string `json:"phone"`
@@ -414,15 +409,14 @@ func (h *WebhookHandler) processFeedback(phoneHash, merchantID, orderID, sku, ca
 		weightData = domain.FeedbackWeight{BuyerRiskDelta: -1.0, MerchantSignal: false, ProductSignal: false} 
 	}
 
-	// 4. Calculate the new Welford mean score locally first
-	// We add +1 to the denominator here because we haven't updated the database count yet
-	newComplaintScore := profile.ComplaintScore + ((sentiment - profile.ComplaintScore) / float64(profile.ComplaintCount+1))
-
 	// 5. THE FIX: Execute an atomic, targeted update to prevent race conditions
 	updatePayload := map[string]interface{}{
 		"complaint_count":   gorm.Expr("complaint_count + 1"),
 		"risk_adjustment":   gorm.Expr("risk_adjustment + ?", weightData.BuyerRiskDelta),
-		"complaint_score":   newComplaintScore,
+		"complaint_score": gorm.Expr(
+			"(complaint_score * complaint_count + ?) / (complaint_count + 1)",
+			sentiment,
+		),
 		"last_complaint_at": now,
 	}
 
@@ -528,6 +522,12 @@ func (h *WebhookHandler) HandleShopifyCustomersRedact(c *fiber.Ctx) error {
 		h.pg.Model(&domain.BillableEvent{}).
 			Where("phone_hash = ?", phoneHash).
 			Update("raw_webhook_body", "[REDACTED-GDPR-CUSTOMER]")
+
+		h.pg.Model(&domain.OrderAudit{}).
+			Where("merchant_id = ? AND raw_payload::text LIKE ?", 
+				h.resolveMerchantID(c, "shopify"), 
+				"%"+phoneHash+"%").
+			Update("raw_payload", `{"redacted": "GDPR-customer-request"}`)
 	}()
 	return c.SendStatus(fiber.StatusOK)
 }
@@ -576,6 +576,12 @@ func (h *WebhookHandler) HandleShopifyShopRedact(c *fiber.Ctx) error {
 			return err
 		}
 
+		if err := tx.Model(&domain.OrderAudit{}).
+			Where("merchant_id = ?", merchant.ID).
+			Update("raw_payload", `{"redacted": "GDPR-shop-request"}`).Error; err != nil {
+			return err
+		}
+
 		return nil
 	})
 
@@ -589,9 +595,6 @@ func (h *WebhookHandler) HandleShopifyShopRedact(c *fiber.Ctx) error {
 // HandleShopifyOrderCreation acts as a unified router dynamically handling shadow ingestion and active blocking
 func (h *WebhookHandler) HandleShopifyOrderCreation(c *fiber.Ctx) error {
 	apiKey := c.Get("X-API-Key")
-	if apiKey == "" {
-		apiKey = c.Query("api_key")
-	}
 	if apiKey == "" {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
 			"success": false,
@@ -618,8 +621,8 @@ func (h *WebhookHandler) HandleShopifyOrderCreation(c *fiber.Ctx) error {
 		MaxLen: 10000,
 		Approx: true,
 		Values: map[string]interface{}{
-			"api_key": apiKey,
-			"payload": string(rawBody),
+			"merchant_id": merchant.ID,
+			"payload":     string(rawBody),
 		},
 	}).Result()
 	if err != nil {
