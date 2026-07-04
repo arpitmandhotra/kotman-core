@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
 	"strconv"
 	"time"
 
@@ -55,13 +56,15 @@ func (s *RedisTrustService) EvaluateRisk(ctx context.Context, phoneHash string, 
 	// ==========================================
 	velocityKey := "velocity_ip:" + ipAddress
 
-	attempts, err := s.db.Incr(ctx, velocityKey).Result()
+	velocityScript := redis.NewScript(`
+		local count = redis.call('INCR', KEYS[1])
+		redis.call('EXPIRE', KEYS[1], ARGV[1], 'NX')
+		return count
+	`)
+	attempts, err := velocityScript.Run(ctx, s.db, []string{velocityKey}, "300").Int64()
 	if err != nil {
 		slog.Error("redis velocity error", "error", err, "ip", ipAddress)
-	}
-
-	if attempts == 1 {
-		s.db.Expire(ctx, velocityKey, 5*time.Minute)
+		attempts = 0
 	}
 
 	if attempts > 3 {
@@ -103,17 +106,48 @@ func (s *RedisTrustService) EvaluateRisk(ctx context.Context, phoneHash string, 
 		var record domain.TrustProfile
 		dbErr := s.pg.Where("phone_hash = ?", phoneHash).First(&record).Error
 
-		// If it's not in Postgres either, the user is completely clean!
 		if dbErr != nil {
+			// New phone — no history. Default high trust, short cache.
 			s.db.Set(ctx, phoneHash, "85", 15*time.Minute)
-			return 85, nil // 85 = High Trust
+			return 85, nil
 		}
 
-		// 3. CACHE WARMING!
-		// We found them in Cold Storage. Copy them back to RAM for 24 hours.
-		s.db.Set(ctx, phoneHash, "20", 24*time.Hour)
+		// Compute a real score from profile data
+		features := record.GenerateAIFeatures(0)
+		score := 100.0
 
-		return 20, nil // 20 = Low Trust
+		// Apply RTO rate penalty (biggest signal)
+		if rtoRate, ok := features["network_rto_rate"].(float64); ok {
+			score -= rtoRate * 60 // 100% RTO rate = -60 points
+		}
+
+		// Apply cancellation frequency penalty
+		if cancelRate, ok := features["cancellation_frequency"].(float64); ok {
+			score -= cancelRate * 20 // 100% cancel rate = -20 points
+		}
+
+		// Apply accumulated risk adjustment from feedback
+		if riskAdj, ok := features["risk_adjustment"].(float64); ok {
+			score += riskAdj // negative deltas from FRAUD_SUSPECTED etc.
+		}
+
+		// Apply blacklist override
+		if record.IsBlacklisted {
+			score = 5
+		}
+
+		// Clamp to [0, 100]
+		if score < 0 { score = 0 }
+		if score > 100 { score = 100 }
+
+		finalScore := int(math.Round(score))
+		cacheVal := fmt.Sprintf("%d", finalScore)
+		cacheTTL := 24 * time.Hour
+		if finalScore < 30 {
+			cacheTTL = 1 * time.Hour // re-evaluate bad actors more frequently
+		}
+		s.db.Set(ctx, phoneHash, cacheVal, cacheTTL)
+		return finalScore, nil
 	})
 
 	// Handle singleflight errors before touching the result value.
@@ -134,8 +168,12 @@ func (s *RedisTrustService) EvaluateRisk(ctx context.Context, phoneHash string, 
 		return domain.TrustResponse{}, fmt.Errorf("internal error: singleflight returned non-int type")
 	}
 	action := "ALLOW_COD"
-	if finalScore <= 20 {
+	if finalScore < 40 {
 		action = "HIDE_COD"
+	} else if finalScore < 60 {
+		action = "REQUIRE_VERIFICATION" // future: trigger WhatsApp OTP
+	} else {
+		action = "ALLOW_COD"
 	}
 
 	return domain.TrustResponse{

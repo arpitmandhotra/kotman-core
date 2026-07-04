@@ -363,26 +363,24 @@ func ProcessInboundOrder(ctx context.Context, platform string, merchantID string
 			return fmt.Errorf("billing accumulator update affected 0 rows (race condition check)")
 		}
 
-		// Perform prepaid wallet balance deduction. Converts paise fee to Rupees (float64).
-		feeRupees := float64(feePaise) / 100.0
-		
+		// Perform prepaid wallet balance deduction using integer paise.
 		// For Postgres, we rely on the check_positive_balance constraint. For SQLite, we query with threshold.
 		deductQuery := DB.WithContext(ctx).Model(&domain.MerchantSettings{}).Where("merchant_id = ?", merchantID)
 		if DB.Dialector.Name() != "postgres" {
-			deductQuery = deductQuery.Where("wallet_balance >= ?", feeRupees)
+			deductQuery = deductQuery.Where("wallet_balance_paise >= ?", feePaise)
 		}
 
-		deductRes := deductQuery.Update("wallet_balance", gorm.Expr("wallet_balance - ?", feeRupees))
+		deductRes := deductQuery.Update("wallet_balance_paise", gorm.Expr("wallet_balance_paise - ?", feePaise))
 		if deductRes.Error != nil {
 			var pgErr *pgconn.PgError
 			if errors.As(deductRes.Error, &pgErr) && pgErr.Code == "23514" {
-				slog.Error("ledger integrity check failed: insufficient merchant wallet balance (CHECK constraint check_positive_balance violated)", "merchant_id", merchantID, "fee", feeRupees)
+				slog.Error("ledger integrity check failed: insufficient merchant wallet balance (CHECK constraint check_positive_balance violated)", "merchant_id", merchantID, "fee", float64(feePaise)/100.0)
 				// Gracefully skip deduction but return nil to complete webhook processing successfully
 			} else {
 				return fmt.Errorf("failed to deduct prepaid fee from wallet: %w", deductRes.Error)
 			}
 		} else if deductRes.RowsAffected == 0 {
-			slog.Warn("insufficient wallet balance (skipped deduction during ingestion)", "merchant_id", merchantID, "fee", feeRupees)
+			slog.Warn("insufficient wallet balance (skipped deduction during ingestion)", "merchant_id", merchantID, "fee", float64(feePaise)/100.0)
 			// Continue webhook processing normally
 		}
 	}
@@ -442,12 +440,22 @@ func ProcessOrderCreditBack(ctx context.Context, platform, merchantID, orderID s
 
 		// Keep a record of the original fee before waiving
 		waivedFeePaise := event.FeePaise
-		event.IsBillable = false
-		event.FeePaise = 0
 
-		// Update event to waived state
-		if err := tx.Save(&event).Error; err != nil {
-			return fmt.Errorf("failed to update billable event: %w", err)
+		// Update event to waived state atomically
+		updateResult := tx.Model(&domain.BillableEvent{}).
+			Where("id = ? AND is_billable = ? AND fee_paise > ?", event.ID, true, 0).
+			Updates(map[string]interface{}{
+				"is_billable": false,
+				"fee_paise":   0,
+			})
+		if updateResult.Error != nil {
+			return fmt.Errorf("failed to mark event as waived: %w", updateResult.Error)
+		}
+		if updateResult.RowsAffected == 0 {
+			// Another goroutine already processed this cancellation — idempotent exit
+			slog.Info("credit back already processed (concurrent request), skipping", 
+				"merchant_id", merchantID, "order_id", orderID)
+			return nil
 		}
 
 		// Decrement accumulator totals for the month the event was created in
@@ -465,11 +473,10 @@ func ProcessOrderCreditBack(ctx context.Context, platform, merchantID, orderID s
 			}
 		}
 
-		// Refund the equivalent Rupee amount to the merchant's wallet
-		feeRupees := float64(waivedFeePaise) / 100.0
+		// Refund the equivalent paise amount to the merchant's wallet
 		refundRes := tx.Model(&domain.MerchantSettings{}).
 			Where("merchant_id = ?", merchantID).
-			Update("wallet_balance", gorm.Expr("wallet_balance + ?", feeRupees))
+			Update("wallet_balance_paise", gorm.Expr("wallet_balance_paise + ?", waivedFeePaise))
 		if refundRes.Error != nil {
 			return fmt.Errorf("failed to credit back wallet balance: %w", refundRes.Error)
 		}
@@ -477,7 +484,7 @@ func ProcessOrderCreditBack(ctx context.Context, platform, merchantID, orderID s
 		slog.Info("successfully processed cancellation/RTO credit back",
 			"merchant_id", merchantID,
 			"order_id", orderID,
-			"credited_amount_rupees", feeRupees,
+			"credited_amount_rupees", float64(waivedFeePaise)/100.0,
 		)
 		return nil
 	})

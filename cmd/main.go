@@ -17,6 +17,7 @@ import (
 	"github.com/arpitmandhotra/api-integrator/internal/service"
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
+	"github.com/gofiber/fiber/v2/middleware/recover"
 )
 
 func main() {
@@ -58,14 +59,18 @@ func main() {
 	webhookHandler := handlers.NewWebhookHandler(postgresClient, redisClient, shopifySecret, wooSecret, magentoSecret)
 	oauthHandler := handlers.NewOAuthHandler(postgresClient, redisClient)
 	magentoHandler := handlers.NewMagentoOnboardHandler(postgresClient)
-	analyticsHandler := handlers.NewAnalyticsHandler(postgresClient)
+	analyticsHandler := handlers.NewAnalyticsHandler(postgresClient, redisClient)
 	onboardingHandler := handlers.NewOnboardingHandler(postgresClient)
-	billingHandler := handlers.NewBillingHandler(postgresClient)
+	billingHandler := handlers.NewBillingHandler(postgresClient, redisClient)
 
 	// ==========================================
 	// 3. THE ROUTER & MIDDLEWARE LAYER
 	// ==========================================
-	app := fiber.New()
+	app := fiber.New(fiber.Config{
+		BodyLimit: 1 * 1024 * 1024, // 1MB — Shopify webhooks are never legitimately larger
+	})
+	
+	app.Use(recover.New())
 	
 	allowedOrigins := os.Getenv("CORS_ALLOWED_ORIGINS")
 	if allowedOrigins == "" {
@@ -167,6 +172,15 @@ func main() {
 	app.Post("/v1/billing/verify",
 		middleware.RequireAPIKey(postgresClient, redisClient),
 		billingHandler.VerifyPaymentAndActivate,
+	)
+
+	app.Post("/v1/billing/module/purchase",
+		middleware.RequireAPIKey(postgresClient, redisClient),
+		billingHandler.PurchaseModule,
+	)
+	app.Post("/v1/billing/module/verify",
+		middleware.RequireAPIKey(postgresClient, redisClient),
+		billingHandler.VerifyModulePurchase,
 	)
 
 	// DOOR C: Private Admin Backdoor 

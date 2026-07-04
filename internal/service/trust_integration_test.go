@@ -114,8 +114,8 @@ func TestEvaluateRisk_Integration(t *testing.T) {
 	}
 
 	if err := pgDB.Create(&domain.MerchantSettings{
-		MerchantID:    testMerchantID,
-		WalletBalance: 1000.0,
+		MerchantID:         testMerchantID,
+		WalletBalancePaise: 100000,
 	}).Error; err != nil {
 		t.Fatalf("failed to seed test merchant settings: %s", err)
 	}

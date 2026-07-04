@@ -68,7 +68,7 @@ func (h *OnboardingHandler) RegisterMerchant(c *fiber.Ctx) error {
 		StoreName:        req.StoreName,
 		APIKeyHash:       hashedKey,
 		IsActive:         false, // enforces Shadow Mode natively
-		ShadowModeEndsAt: time.Now().Add(25 * 24 * time.Hour),
+		ShadowModeEndsAt: time.Now().Add(35 * 24 * time.Hour),
 	}
 
 	if err := h.pg.WithContext(c.UserContext()).Create(&merchant).Error; err != nil {

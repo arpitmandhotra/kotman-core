@@ -19,6 +19,25 @@ type Merchant struct {
 	// Standard tracking timestamps
 	CreatedAt time.Time
 	UpdatedAt time.Time
+
+	// --- SUBSCRIPTION MODULES ---
+	// Each bool represents whether the merchant has purchased that module.
+	// HasRTOEngine = true also grants CrossNetworkIntelligence for free.
+	HasRTOEngine         bool       `gorm:"default:false"`
+	HasCrossNetworkIntel bool       `gorm:"default:false"` // true if purchased standalone OR HasRTOEngine
+	HasCRMUpsellEngine   bool       `gorm:"default:false"`
+
+	// Monthly subscription tracking for flat-fee modules
+	CrossNetworkSubID    string     `gorm:"default:''"` // Razorpay subscription ID or manual ref
+	CRMUpsellSubID       string     `gorm:"default:''"` // Razorpay subscription ID or manual ref
+	CrossNetworkRenewsAt *time.Time // nil until purchased
+	CRMUpsellRenewsAt    *time.Time // nil until purchased
+}
+
+// CrossNetworkActive returns true if the merchant has access to cross-network intelligence,
+// either via standalone purchase or because they have the RTO engine (bundled).
+func (m *Merchant) CrossNetworkActive() bool {
+	return m.HasCrossNetworkIntel || m.HasRTOEngine
 }
 
 type ExecutionMode string
@@ -55,7 +74,7 @@ type MerchantSettings struct {
     ProviderName            string `gorm:"default:''"` // "twilio" | "interakt"
 
     // --- KOTMAN MANAGED WALLET ---
-    WalletBalance float64 `gorm:"default:0"`
+    WalletBalancePaise int `gorm:"default:0;column:wallet_balance_paise"`
 
     // Billing configuration
     CheckoutMode        string `gorm:"default:'native'"` // "native" | "third_party" — merchant declares their setup
@@ -104,14 +123,188 @@ type BackfilledOrder struct {
 	CreatedAt  time.Time
 }
 
+// InsightsResponse is the full analytics payload returned by GET /v1/merchants/insights.
+// Sections are gated by subscription module. Fields that require a paid module
+// are populated with zero/nil values and accompanied by a paywall flag when not purchased.
 type InsightsResponse struct {
-	TotalOrdersAnalyzed       int     `json:"total_orders_analyzed"`
-	HighRiskOrdersFlagged     int     `json:"high_risk_orders_flagged"`
-	EstimatedLossPrevented     float64 `json:"estimated_loss_prevented"`
-	ExecutionMode             string  `json:"execution_mode"`
-	DaysRemainingInShadowMode int     `json:"days_remaining_in_shadow_mode"`
-	ShouldShowUpgradePrompt   bool    `json:"should_show_upgrade_prompt"`
-	DaysPastShadowMode        int     `json:"days_past_shadow_mode"`
-	ThreeDayTrailingLoss      float64 `json:"three_day_trailing_loss"`
-	ProjectedMonthlyLoss      float64 `json:"projected_monthly_loss"`
+
+    // =========================================================
+    // META — always returned, all tiers
+    // =========================================================
+    ExecutionMode             string    `json:"execution_mode"`              // "SHADOW" | "ACTIVE"
+    ShadowDaysRemaining       int       `json:"shadow_days_remaining"`        // 0 if active
+    ShadowEndsAt              time.Time `json:"shadow_ends_at"`
+    TotalOrdersAnalyzed       int       `json:"total_orders_analyzed"`        // all OrderAudit rows for merchant
+    DataCollectionStartedAt   time.Time `json:"data_collection_started_at"`  // merchant.CreatedAt
+    MinCohortMet              bool      `json:"min_cohort_met"`               // true if total_orders_analyzed >= 50
+
+    // =========================================================
+    // UPGRADE PROMPTS — shown from day 25 onward
+    // =========================================================
+    ShowUpgradePrompt         bool      `json:"show_upgrade_prompt"`
+    UpgradeUrgencyLevel       int       `json:"upgrade_urgency_level"`   // 1=gentle, 2=moderate, 3=urgent
+    ShadowDaysPastExpiry      int       `json:"shadow_days_past_expiry"` // 0 if still in shadow or active
+    SimulatedRTOSavingsINR    float64   `json:"simulated_rto_savings_inr"` // projected savings if RTO engine active
+    SimulatedSavingsRangeMin  float64   `json:"simulated_savings_range_min"` // conservative
+    SimulatedSavingsRangeMax  float64   `json:"simulated_savings_range_max"` // optimistic
+
+    // =========================================================
+    // MODULE ENTITLEMENTS — always returned, frontend uses these to render paywalls
+    // =========================================================
+    HasRTOEngine         bool `json:"has_rto_engine"`
+    HasCrossNetworkIntel bool `json:"has_cross_network_intel"` // true if RTO active OR standalone purchased
+    HasCRMUpsellEngine   bool `json:"has_crm_upsell_engine"`
+
+    // =========================================================
+    // SECTION A — OWN STORE ANALYTICS
+    // Always visible, all tiers, no paywall. Requires MinCohortMet = true to show real data.
+    // All monetary values in INR (float64). All rates as 0.0–1.0 (not percentage).
+    // =========================================================
+    OwnStore OwnStoreAnalytics `json:"own_store"`
+
+    // =========================================================
+    // SECTION B — CROSS-NETWORK INTELLIGENCE
+    // Requires HasCrossNetworkIntel == true for full data.
+    // If false: populate teaser fields only (top-level aggregates), set CrossNetworkPaywalled = true.
+    // =========================================================
+    CrossNetwork         CrossNetworkAnalytics `json:"cross_network"`
+    CrossNetworkPaywalled bool                 `json:"cross_network_paywalled"`
+
+    // =========================================================
+    // SECTION C — RTO ENGINE LIVE STATS
+    // Only meaningful when HasRTOEngine = true AND ExecutionMode = "ACTIVE".
+    // In shadow mode: show simulated/projected values with is_simulated = true.
+    // =========================================================
+    RTOEngine RTOEngineAnalytics `json:"rto_engine"`
+}
+
+// OwnStoreAnalytics — derived entirely from this merchant's OrderAudit and TrustProfile data.
+// No cross-merchant data. Safe to show in all tiers.
+type OwnStoreAnalytics struct {
+    // Volume
+    TotalOrdersLast30Days     int     `json:"total_orders_last_30_days"`
+    CODOrdersLast30Days       int     `json:"cod_orders_last_30_days"`
+    CODShareRate              float64 `json:"cod_share_rate"`              // COD / total
+
+    // Spend profile of this merchant's buyers (derived from OrderAudit.RawPayload cart values)
+    AvgCartValueINR           float64 `json:"avg_cart_value_inr"`
+    MedianCartValueINR        float64 `json:"median_cart_value_inr"`
+    CartValueP25INR           float64 `json:"cart_value_p25_inr"`          // 25th percentile
+    CartValueP75INR           float64 `json:"cart_value_p75_inr"`          // 75th percentile
+    CartValueP90INR           float64 `json:"cart_value_p90_inr"`          // 90th percentile
+
+    // RTO on this store
+    ObservedRTORate           float64 `json:"observed_rto_rate"`           // RTOs / total delivered
+    ObservedRTOCount          int     `json:"observed_rto_count"`
+    EstimatedRTOCostINR       float64 `json:"estimated_rto_cost_inr"`      // count * 280 (avg fwd+rev shipping)
+
+    // Buyer intent distribution (from PredictedRiskScore in OrderAudit)
+    // Risk score 0-100 where 100 = safest. Bucketed into 3 tiers.
+    BuyerIntentDistribution   BuyerIntentBuckets `json:"buyer_intent_distribution"`
+
+    // Kotman Score average for this merchant's buyers
+    // Kotman Score = average PredictedRiskScore across all OrderAudit rows for this merchant
+    // Labelled as: 0-39 = "High Risk", 40-69 = "Moderate", 70-84 = "Trusted", 85-100 = "VIP"
+    AvgKotmanScore            float64 `json:"avg_kotman_score"`
+    KotmanScoreLabel          string  `json:"kotman_score_label"` // "High Risk" | "Moderate" | "Trusted" | "VIP"
+
+    // Refund/complaint rate on own store
+    // Derived from CustomerFeedback rows where merchant_id = this merchant
+    OwnStoreRefundRate        float64 `json:"own_store_refund_rate"`       // complaints / total_orders
+    OwnStoreRefundCount       int     `json:"own_store_refund_count"`
+    TopComplaintCategory      string  `json:"top_complaint_category"`      // most frequent Category in CustomerFeedback
+
+    // Pincode breakdown (top 5 pincodes by order volume for this merchant)
+    // Each entry: { pincode, order_count, rto_rate, avg_cart_inr }
+    TopPincodesByVolume       []PincodeInsight `json:"top_pincodes_by_volume"`
+}
+
+// BuyerIntentBuckets — how this merchant's buyer base splits across risk tiers
+type BuyerIntentBuckets struct {
+    HighRiskPercent    float64 `json:"high_risk_pct"`    // score 0–39, label "Impulsive / At-Risk"
+    ModeratePercent    float64 `json:"moderate_pct"`     // score 40–69, label "Casual Buyer"
+    TrustedPercent     float64 `json:"trusted_pct"`      // score 70–84, label "Trusted"
+    VIPPercent         float64 `json:"vip_pct"`          // score 85–100, label "VIP"
+    // Counts
+    HighRiskCount      int     `json:"high_risk_count"`
+    ModerateCount      int     `json:"moderate_count"`
+    TrustedCount       int     `json:"trusted_count"`
+    VIPCount           int     `json:"vip_count"`
+}
+
+// PincodeInsight — per-pincode breakdown
+type PincodeInsight struct {
+    Pincode       string  `json:"pincode"`
+    OrderCount    int     `json:"order_count"`
+    RTORate       float64 `json:"rto_rate"`
+    AvgCartINR    float64 `json:"avg_cart_inr"`
+}
+
+// CrossNetworkAnalytics — aggregate statistics across ALL merchants in the Kotman network.
+// CRITICAL DPDP RULE: every field here is a STATISTICAL AGGREGATE with minimum cohort of 50.
+// No individual buyer is identifiable from any field in this struct.
+// Individual phone hashes are never surfaced. Only distributions and percentiles.
+type CrossNetworkAnalytics struct {
+    // How this merchant's buyers compare to the full network
+    // Spending percentile: what % of network buyers spend LESS than this merchant's avg buyer
+    MerchantSpendingPercentile    float64 `json:"merchant_spending_percentile"` // 0.0–100.0
+    NetworkAvgCartINR             float64 `json:"network_avg_cart_inr"`
+    NetworkMedianCartINR          float64 `json:"network_median_cart_inr"`
+
+    // Top 10% spenders across the entire network
+    // "What do the top 10% of buyers across all Kotman merchants spend per order on average?"
+    NetworkTop10PctAvgCartINR     float64 `json:"network_top10_pct_avg_cart_inr"`
+    NetworkTop10PctAvgMonthlyINR  float64 `json:"network_top10_pct_avg_monthly_inr"` // estimated monthly spend (avg_cart * avg_order_frequency)
+
+    // Buyer overlap: what % of this merchant's buyers exist elsewhere in the network
+    // and what is the aggregate spend of the overlapping segment
+    NetworkOverlapPct             float64 `json:"network_overlap_pct"`          // 0.0–1.0
+    OverlapBuyersAvgMonthlyINR    float64 `json:"overlap_buyers_avg_monthly_inr"` // avg monthly spend of overlapping buyers across network
+    OverlapBuyersAvgCartINR       float64 `json:"overlap_buyers_avg_cart_inr"`
+
+    // Spending band distribution: of this merchant's buyers, what % fall into each network spend band
+    // Bands: Low (<₹500), Mid (₹500–₹2000), High (₹2000–₹5000), Premium (>₹5000)
+    SpendBandDistribution         SpendBandBreakdown `json:"spend_band_distribution"`
+
+    // Refund rate across network (not merchant-specific — entire network aggregate)
+    // "Across all Kotman merchants, X% of orders result in a refund/RTO"
+    NetworkRTORateAggregate       float64 `json:"network_rto_rate_aggregate"`   // RTOs / total_orders across all merchants
+    NetworkRefundRateAggregate    float64 `json:"network_refund_rate_aggregate"` // CustomerFeedback complaints / total_orders network-wide
+    // For this merchant specifically vs network
+    MerchantRTOVsNetworkDelta     float64 `json:"merchant_rto_vs_network_delta"` // positive = merchant worse than network
+
+    // Kotman Score comparison
+    MerchantAvgKotmanScore        float64 `json:"merchant_avg_kotman_score"`    // same as OwnStore.AvgKotmanScore
+    NetworkAvgKotmanScore         float64 `json:"network_avg_kotman_score"`     // across all merchants
+
+    // TEASER ONLY (available in free tier, full data requires module)
+    // Teaser = aggregate figures above without SpendBandDistribution detail or overlap breakdowns
+    IsTeaserOnly                  bool    `json:"is_teaser_only"` // true when CrossNetworkPaywalled
+
+    // Cohort note: only populated when network has >= 50 merchant-buyers with overlap
+    NetworkCohortSufficient       bool    `json:"network_cohort_sufficient"`
+}
+
+// SpendBandBreakdown — what % of this merchant's buyers fall into each network spend tier
+type SpendBandBreakdown struct {
+    LowPct     float64 `json:"low_pct"`     // <₹500 avg cart
+    MidPct     float64 `json:"mid_pct"`     // ₹500–₹2,000
+    HighPct    float64 `json:"high_pct"`    // ₹2,000–₹5,000
+    PremiumPct float64 `json:"premium_pct"` // >₹5,000
+}
+
+// RTOEngineAnalytics — live engine stats. Populated in ACTIVE mode, simulated in SHADOW mode.
+type RTOEngineAnalytics struct {
+    IsSimulated              bool    `json:"is_simulated"` // true during shadow mode
+    OrdersEvaluatedTotal     int     `json:"orders_evaluated_total"`
+    OrdersBlockedTotal       int     `json:"orders_blocked_total"`    // COD hidden or WA intervention triggered
+    BlockRate                float64 `json:"block_rate"`              // blocked / evaluated
+    FalsePositiveRate        float64 `json:"false_positive_rate"`     // RequiresReview=true events / blocked (manual estimate)
+    WalletBalanceINR         float64 `json:"wallet_balance_inr"`      // current wallet in INR
+    EstimatedDaysWalletLeft  int     `json:"estimated_days_wallet_left"` // wallet / avg_daily_burn
+    AvgDailyFeePaise         int     `json:"avg_daily_fee_paise"`
+    ProjectedMonthlyFeeINR   float64 `json:"projected_monthly_fee_inr"`
+    RTOsSavedTotal           int     `json:"rtos_saved_total"`        // BillableEvents where block happened AND order had no delivery
+    EstimatedRevenueSavedINR float64 `json:"estimated_revenue_saved_inr"` // RTOsSaved * 280
+    ThreeDayTrailingBlocksINR float64 `json:"three_day_trailing_blocks_inr"`
 }
