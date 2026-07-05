@@ -80,7 +80,10 @@ func (w *AIIngestionWorker) processMessage(ctx context.Context, msg redis.XMessa
 	}
 
 	var merchant domain.Merchant
-	err := w.pg.WithContext(ctx).Where("id = ?", merchantIDVal).First(&merchant).Error
+	err := w.pg.WithContext(ctx).
+		Select("id", "is_active", "has_rto_engine", "shadow_mode_ends_at", "store_name").
+		Where("id = ?", merchantIDVal).
+		First(&merchant).Error
 	if err != nil {
 		slog.Warn("merchant not found or database error matching ID", "message_id", msg.ID, "error", err)
 		w.acknowledgeMessage(ctx, msg.ID)
@@ -88,9 +91,9 @@ func (w *AIIngestionWorker) processMessage(ctx context.Context, msg redis.XMessa
 	}
 
 	// Check shadow mode state based on grace period timestamp
-	executionMode := domain.ExecutionModeActive
-	if time.Now().Before(merchant.ShadowModeEndsAt) {
-		executionMode = domain.ExecutionModeShadow
+	executionMode := domain.ExecutionModeShadow
+	if merchant.InActiveMode() {
+		executionMode = domain.ExecutionModeActive
 	}
 
 	// Parse payload flexibly to locate the Order ID

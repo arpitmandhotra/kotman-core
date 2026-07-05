@@ -46,6 +46,7 @@ func (m *MoEngageConnector) SyncRiskEvent(ctx context.Context, event KotmanRiskE
             "kotman_is_vip":        event.IsVIP,
             "kotman_merchant_id":   event.MerchantID,
             "kotman_last_template": event.Template,
+            "kotman_segment":       event.SegmentTag,
         },
     }
 

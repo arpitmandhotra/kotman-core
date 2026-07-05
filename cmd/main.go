@@ -199,6 +199,7 @@ func main() {
 	adminGroup.Get("/billing/summary", adminHandler.GetBillingSummary)
 	adminGroup.Get("/billing/invoices", adminHandler.GetInvoices)
 	adminGroup.Post("/billing/events/:event_id/override", adminHandler.OverrideEventFee)
+	adminGroup.Get("/subscriptions", adminHandler.GetSubscriptionStatus)
 
 	// ==========================================
 	// 5. HEALTH CHECK & START UP

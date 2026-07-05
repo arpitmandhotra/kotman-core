@@ -60,6 +60,7 @@ func main() {
 
 	go worker.listenAndProcess(ctx, pubsub)
 	go worker.startTokenRefresher(ctx)
+	go worker.runSubscriptionExpiryJob(ctx)   // NEW — runs every 6 hours
 	go StartAIIngestionWorker(ctx, redisClient, postgresClient)
 
 	quit := make(chan os.Signal, 1)
@@ -132,6 +133,12 @@ func (w *RecoveryWorker) processCartRecovery(ctx context.Context, merchantID, ph
 		return
 	}
 
+	merchant, err := w.loadMerchant(merchantID)
+	if err != nil {
+		slog.Error("failed to load merchant for module check", "merchant_id", merchantID, "error", err)
+		return
+	}
+
 	// 2. Retrieve raw phone from data key — set at cart abandonment time by JS snippet.
 	// The data key expires slightly after the trigger key so it is still readable here.
 	rawPhone, err := w.fetchAndDeleteDataKey(ctx,
@@ -170,6 +177,21 @@ func (w *RecoveryWorker) processCartRecovery(ctx context.Context, merchantID, ph
 		}
 	}
 
+	// Determine segment tag from profile data
+	segmentTag := "high_intent" // default for unknown buyers
+	if profileErr == nil {
+		switch {
+		case profile.IsBlacklisted || profile.TotalRTOs > 3:
+			segmentTag = "rto_risk"
+		case profile.TotalRTOs == 0 && profile.ComplaintCount == 0 && profile.TotalOrders > 5:
+			segmentTag = "vip_buyer"
+		case profile.TotalRTOs == 0 && profile.TotalOrders > 0:
+			segmentTag = "prepaid_candidate"
+		default:
+			segmentTag = "high_intent"
+		}
+	}
+
 	event := crm.KotmanRiskEvent{
 		PhoneHash:  phoneHash,
 		MerchantID: merchantID,
@@ -178,10 +200,11 @@ func (w *RecoveryWorker) processCartRecovery(ctx context.Context, merchantID, ph
 		RTOCount:   w.safeRTOCount(profile, profileErr),
 		IsVIP:      isVIP,
 		EventTime:  time.Now(),
+		SegmentTag: segmentTag,
 	}
 
 	// 6. Route to CRM or fall back through direct WhatsApp tiers
-	w.executeRouting(ctx, settings, rawPhone, phoneHash, event)
+	w.executeRouting(ctx, merchant, settings, rawPhone, phoneHash, event)
 }
 
 func (w *RecoveryWorker) processPostPurchaseFeedback(ctx context.Context, merchantID, phoneHash, orderID string) {
@@ -190,6 +213,12 @@ func (w *RecoveryWorker) processPostPurchaseFeedback(ctx context.Context, mercha
 	settings, err := w.loadSettings(merchantID)
 	if err != nil {
 		slog.Error("failed to load merchant settings", "merchant_id", merchantID, "error", err)
+		return
+	}
+
+	merchant, err := w.loadMerchant(merchantID)
+	if err != nil {
+		slog.Error("failed to load merchant for module check", "merchant_id", merchantID, "error", err)
 		return
 	}
 
@@ -216,6 +245,21 @@ func (w *RecoveryWorker) processPostPurchaseFeedback(ctx context.Context, mercha
 		}
 	}
 
+	// Determine segment tag from profile data
+	segmentTag := "high_intent" // default for unknown buyers
+	if profileErr == nil {
+		switch {
+		case profile.IsBlacklisted || profile.TotalRTOs > 3:
+			segmentTag = "rto_risk"
+		case profile.TotalRTOs == 0 && profile.ComplaintCount == 0 && profile.TotalOrders > 5:
+			segmentTag = "vip_buyer"
+		case profile.TotalRTOs == 0 && profile.TotalOrders > 0:
+			segmentTag = "prepaid_candidate"
+		default:
+			segmentTag = "high_intent"
+		}
+	}
+
 	event := crm.KotmanRiskEvent{
 		PhoneHash:     phoneHash,
 		MerchantID:    merchantID,
@@ -225,9 +269,10 @@ func (w *RecoveryWorker) processPostPurchaseFeedback(ctx context.Context, mercha
 		RTOCount:      w.safeRTOCount(profile, profileErr),
 		IsVIP:         isVIP,
 		EventTime:     time.Now(),
+		SegmentTag:    segmentTag,
 	}
 
-	w.executeRouting(ctx, settings, rawPhone, phoneHash, event)
+	w.executeRouting(ctx, merchant, settings, rawPhone, phoneHash, event)
 }
 
 // executeRouting implements the three-tier routing hierarchy:
@@ -239,45 +284,50 @@ func (w *RecoveryWorker) processPostPurchaseFeedback(ctx context.Context, mercha
 // Each tier falls through to the next on failure.
 func (w *RecoveryWorker) executeRouting(
 	ctx context.Context,
+	merchant *domain.Merchant,
 	settings *domain.MerchantSettings,
 	rawPhone, phoneHash string,
 	event crm.KotmanRiskEvent,
 ) {
 	// TIER 1: CRM connector
-	if settings.CRMProvider != "" && settings.CRMAPIKey != "" {
-		// CRM push gate — only fire if merchant has the CRM Upsell Engine module active
-		var merchantForCRM domain.Merchant
-		if err := w.pg.WithContext(ctx).Select("has_crm_upsell_engine, id").
-			Where("id = ?", settings.MerchantID).First(&merchantForCRM).Error; err == nil {
-			if merchantForCRM.HasCRMUpsellEngine {
-				connector, err := crm.NewConnector(
-					settings.CRMProvider,
-					settings.CRMAPIKey,
-					settings.CRMAccountID,
-				)
-				if err != nil {
-					slog.Error("CRM connector init failed",
-						"provider", settings.CRMProvider,
-						"error", err,
-					)
-					// Fall through to Tier 2
-				} else {
-					if err := connector.SyncRiskEvent(ctx, event); err != nil {
-						slog.Error("CRM sync failed — falling through to direct WhatsApp",
-							"crm", connector.Name(),
-							"error", err,
-						)
-						// Fall through to Tier 2
-					} else {
-						return // CRM handled it — done
-					}
-				}
-			} else {
-				slog.Info("CRM push skipped: CRM Upsell Engine module not active for merchant", "merchant_id", settings.MerchantID)
-			}
+	// CORRECT: CRM push requires MODULE 3 (HasCRMUpsellEngine)
+	if merchant.HasCRMUpsellEngine && settings.CRMProvider != "" && settings.CRMAPIKey != "" {
+		connector, err := crm.NewConnector(
+			settings.CRMProvider,
+			settings.CRMAPIKey,
+			settings.CRMAccountID,
+		)
+		if err != nil {
+			slog.Error("CRM connector init failed",
+				"provider", settings.CRMProvider,
+				"merchant_id", merchant.ID,
+				"error", err,
+			)
+			// Fall through to Tier 2 — do NOT return
 		} else {
-			slog.Error("failed to query merchant for CRM push gate", "merchant_id", settings.MerchantID, "error", err)
+			if err := connector.SyncRiskEvent(ctx, event); err != nil {
+				slog.Error("CRM sync failed — falling through to direct WhatsApp",
+					"crm", connector.Name(),
+					"merchant_id", merchant.ID,
+					"error", err,
+				)
+				// Fall through to Tier 2 — do NOT return
+			} else {
+				slog.Info("CRM sync successful — routing complete",
+					"crm", connector.Name(),
+					"merchant_id", merchant.ID,
+				)
+				return // CRM handled it — stop here
+			}
 		}
+	} else if settings.CRMProvider != "" && !merchant.HasCRMUpsellEngine {
+		// Merchant has CRM configured but hasn't purchased MODULE 3.
+		// Log this as a debug event — useful for sales follow-up on upgrade.
+		slog.Debug("CRM push skipped — merchant has not purchased CRM Upsell Engine module",
+			"merchant_id", merchant.ID,
+			"configured_provider", settings.CRMProvider,
+		)
+		// Fall through to Tier 2
 	}
 
 	// TIER 2: Merchant's own communications key
@@ -334,6 +384,20 @@ func (w *RecoveryWorker) loadSettings(merchantID string) (*domain.MerchantSettin
 	var settings domain.MerchantSettings
 	err := w.pg.Where("merchant_id = ?", merchantID).First(&settings).Error
 	return &settings, err
+}
+
+// loadMerchant fetches the Merchant row for module entitlement checks.
+// Returns (nil, err) for all error cases — callers must check err before accessing fields.
+func (w *RecoveryWorker) loadMerchant(merchantID string) (*domain.Merchant, error) {
+	var merchant domain.Merchant
+	err := w.pg.
+		Select("id", "is_active", "has_rto_engine", "has_crm_upsell_engine", "has_cross_network_intel").
+		Where("id = ?", merchantID).
+		First(&merchant).Error
+	if err != nil {
+		return nil, err
+	}
+	return &merchant, nil
 }
 
 // loadProfile returns (nil, err) for ALL error cases — both ErrRecordNotFound
@@ -416,6 +480,7 @@ func (w *RecoveryWorker) sendWhatsApp(
 		"incentive_pct", discount,
 		"hash", safePreview(phoneHash),
 		"provider", providerName,
+		"has_api_key", apiKey != "",
 	)
 
 	// Production dispatch — switch on provider and POST to their API.
@@ -530,4 +595,146 @@ func (w *RecoveryWorker) refreshShopifyTokens(ctx context.Context) {
 			slog.Info("successfully refreshed shopify credentials", "shop", cred.ShopDomain, "merchant_id", cred.MerchantID)
 		}
 	}
+}
+
+// runSubscriptionExpiryJob checks for expired flat-fee module subscriptions
+// and deactivates them. Runs on a ticker — should be called in a goroutine.
+// It does NOT auto-renew — renewal requires a new Razorpay payment initiated
+// by the merchant. On expiry, the module bool is set to false and the merchant
+// receives a downgrade (analytics remain, paid features are gated off).
+func (w *RecoveryWorker) runSubscriptionExpiryJob(ctx context.Context) {
+	// Run immediately on startup, then every 6 hours
+	ticker := time.NewTicker(6 * time.Hour)
+	defer ticker.Stop()
+
+	w.processExpiredSubscriptions(ctx)
+
+	for {
+		select {
+		case <-ctx.Done():
+			slog.Info("subscription expiry job shutting down")
+			return
+		case <-ticker.C:
+			w.processExpiredSubscriptions(ctx)
+		}
+	}
+}
+
+func (w *RecoveryWorker) processExpiredSubscriptions(ctx context.Context) {
+	slog.Info("running subscription expiry check")
+
+	// Log subscriptions in grace period (ended but within 72 hours) — useful for dunning alerts
+	var inGrace []domain.MerchantSubscription
+	w.pg.WithContext(ctx).
+		Where("status = ? AND current_period_end < ? AND current_period_end > ?",
+			"active", time.Now(), time.Now().Add(-72*time.Hour)).
+		Find(&inGrace)
+
+	for _, sub := range inGrace {
+		slog.Warn("subscription in grace period — renewal overdue",
+			"merchant_id",  sub.MerchantID,
+			"module",        sub.Module,
+			"expired_at",    sub.CurrentPeriodEnd,
+			"hard_expires",  sub.CurrentPeriodEnd.Add(72*time.Hour),
+		)
+		// TODO: trigger dunning email here when email infrastructure is in place
+	}
+
+	// 3-day grace period: only expire subscriptions that ended more than 72 hours ago
+	graceDeadline := time.Now().Add(-72 * time.Hour)
+
+	var expired []domain.MerchantSubscription
+	if err := w.pg.WithContext(ctx).
+		Where("status = ? AND current_period_end < ?", "active", graceDeadline).
+		Find(&expired).Error; err != nil {
+		slog.Error("failed to query expired subscriptions", "error", err)
+		return
+	}
+
+	if len(expired) == 0 {
+		slog.Info("no expired subscriptions found")
+		return
+	}
+
+	slog.Info("found expired subscriptions", "count", len(expired))
+
+	for _, sub := range expired {
+		if err := w.expireSubscription(ctx, sub); err != nil {
+			slog.Error("failed to expire subscription",
+				"subscription_id", sub.ID,
+				"merchant_id",     sub.MerchantID,
+				"module",          sub.Module,
+				"error",           err,
+			)
+			// Continue — don't let one failure block other expirations
+		}
+	}
+}
+
+func (w *RecoveryWorker) expireSubscription(ctx context.Context, sub domain.MerchantSubscription) error {
+	return w.pg.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// IMPORTANT: Do NOT touch is_active or has_rto_engine here.
+		// The RTO engine is funded by wallet balance, not a time-boxed subscription.
+		// It only deactivates via the Postgres check_positive_balance constraint.
+
+		// Idempotent exit: check status = 'active'
+		result := tx.Model(&domain.MerchantSubscription{}).
+			Where("id = ? AND status = ?", sub.ID, "active").
+			Updates(map[string]interface{}{
+				"status":       "inactive",
+				"cancelled_at": time.Now(),
+			})
+		if result.Error != nil {
+			return fmt.Errorf("failed to mark subscription inactive: %w", result.Error)
+		}
+		if result.RowsAffected == 0 {
+			// Another worker already expired this subscription — idempotent exit
+			slog.Info("subscription already expired by concurrent worker", "subscription_id", sub.ID)
+			return nil
+		}
+
+		// Determine which Merchant field to flip based on module name
+		merchantUpdates := map[string]interface{}{}
+		switch sub.Module {
+		case domain.ModuleCrossNetwork:
+			// Only revoke HasCrossNetworkIntel if the merchant does NOT have HasRTOEngine.
+			// If they have the RTO engine, cross-network is still bundled and free.
+			var merchant domain.Merchant
+			if err := tx.Select("has_rto_engine").Where("id = ?", sub.MerchantID).First(&merchant).Error; err != nil {
+				return fmt.Errorf("failed to load merchant for expiry check: %w", err)
+			}
+			if !merchant.HasRTOEngine {
+				merchantUpdates["has_cross_network_intel"] = false
+				merchantUpdates["cross_network_renews_at"] = nil
+			} else {
+				// RTO engine still active — cross-network stays on, just remove the sub record
+				slog.Info("cross_network sub expired but RTO engine still active — keeping intel access",
+					"merchant_id", sub.MerchantID,
+				)
+				return nil // Nothing to do on Merchant row
+			}
+
+		case domain.ModuleCRMUpsell:
+			merchantUpdates["has_crm_upsell_engine"] = false
+			merchantUpdates["crm_upsell_renews_at"]   = nil
+
+		default:
+			return fmt.Errorf("unknown module during expiry: %s", sub.Module)
+		}
+
+		if len(merchantUpdates) > 0 {
+			if err := tx.Model(&domain.Merchant{}).
+				Where("id = ?", sub.MerchantID).
+				Updates(merchantUpdates).Error; err != nil {
+				return fmt.Errorf("failed to update merchant flags on expiry: %w", err)
+			}
+		}
+
+		slog.Info("subscription expired and module deactivated",
+			"merchant_id", sub.MerchantID,
+			"module",       sub.Module,
+			"expired_at",   sub.CurrentPeriodEnd,
+		)
+		return nil
+	})
 }

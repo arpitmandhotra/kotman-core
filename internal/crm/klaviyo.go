@@ -52,6 +52,7 @@ func (k *KlaviyoConnector) SyncRiskEvent(ctx context.Context, event KotmanRiskEv
                                 "kotman_is_vip":        event.IsVIP,
                                 "kotman_merchant_id":   event.MerchantID,
                                 "kotman_discount_hint": event.DiscountValue,
+                                "kotman_segment":       event.SegmentTag,
                             },
                         },
                     },
