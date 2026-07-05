@@ -630,7 +630,7 @@ func (h *WebhookHandler) HandleShopifyOrderCreation(c *fiber.Ctx) error {
 	}
 
 	// Step 2 & 3: Check the execution mode
-	if !merchant.IsActive || time.Now().Before(merchant.ShadowModeEndsAt) {
+	if !merchant.InActiveMode() {
 		return c.SendStatus(fiber.StatusOK)
 	}
 

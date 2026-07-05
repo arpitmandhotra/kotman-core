@@ -38,6 +38,7 @@ func (h *HubSpotConnector) SyncRiskEvent(ctx context.Context, event KotmanRiskEv
             "kotman_is_vip":      event.IsVIP,
             "kotman_template":    event.Template,
             "kotman_merchant_id": event.MerchantID,
+            "kotman_segment":     event.SegmentTag,
         },
         "idProperty": "kotman_phone_hash",
     }

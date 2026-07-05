@@ -45,6 +45,7 @@ func (w *WebEngageConnector) SyncRiskEvent(ctx context.Context, event KotmanRisk
             "kotman_rto_count":   event.RTOCount,
             "kotman_is_vip":      event.IsVIP,
             "kotman_merchant_id": event.MerchantID,
+            "kotman_segment":     event.SegmentTag,
         },
     }
 

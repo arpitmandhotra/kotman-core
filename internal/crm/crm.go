@@ -22,6 +22,10 @@ type KotmanRiskEvent struct {
     RTOCount      int
     IsVIP         bool
     EventTime     time.Time
+    // SegmentTag is the human-readable buyer segment pushed as a CRM property.
+    // Values: "vip_buyer" | "high_intent" | "prepaid_candidate" | "rto_risk"
+    // Connectors should push this as a contact attribute named "kotman_segment".
+    SegmentTag    string
 }
 
 // Connector is the interface every CRM must implement.

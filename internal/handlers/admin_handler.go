@@ -429,3 +429,43 @@ func (h *AdminHandler) OverrideEventFee(c *fiber.Ctx) error {
 		"message": "Fee overridden successfully",
 	})
 }
+
+// GetSubscriptionStatus returns all active and recently expired subscriptions.
+// Route: GET /v1/admin/subscriptions
+// Auth: RequireAdminKey middleware (existing)
+func (h *AdminHandler) GetSubscriptionStatus(c *fiber.Ctx) error {
+	var subs []domain.MerchantSubscription
+	if err := h.pg.WithContext(c.UserContext()).
+		Order("current_period_end desc").
+		Limit(200).
+		Find(&subs).Error; err != nil {
+		return c.Status(500).JSON(fiber.Map{"success": false, "error": "query failed"})
+	}
+
+	// Enrich with merchant store name for readability
+	type enrichedSub struct {
+		domain.MerchantSubscription
+		StoreName string `json:"store_name"`
+	}
+
+	enriched := make([]enrichedSub, 0, len(subs))
+	for _, s := range subs {
+		var m domain.Merchant
+		h.pg.WithContext(c.UserContext()).Select("store_name").Where("id = ?", s.MerchantID).First(&m)
+		enriched = append(enriched, enrichedSub{
+			MerchantSubscription: s,
+			StoreName:            m.StoreName,
+		})
+	}
+
+	return c.JSON(fiber.Map{
+		"success": true,
+		"count":   len(enriched),
+		"data":    enriched,
+	})
+}
+
+// TODO (V1.1): Add POST /v1/admin/subscriptions/:id/cancel endpoint.
+// For now, manually UPDATE merchant_subscriptions SET status='cancelled',
+// cancelled_at=NOW() WHERE id=? and then UPDATE merchants SET
+// has_cross_network_intel=false / has_crm_upsell_engine=false WHERE id=?

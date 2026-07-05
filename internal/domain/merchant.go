@@ -40,6 +40,13 @@ func (m *Merchant) CrossNetworkActive() bool {
 	return m.HasCrossNetworkIntel || m.HasRTOEngine
 }
 
+// InActiveMode returns true if this merchant should have live RTO enforcement running.
+// This is the single source of truth for execution mode decisions across the codebase.
+// It does NOT depend on ShadowModeEndsAt — that field is only for UI countdown display.
+func (m *Merchant) InActiveMode() bool {
+	return m.IsActive || m.HasRTOEngine
+}
+
 type ExecutionMode string
 
 const (
