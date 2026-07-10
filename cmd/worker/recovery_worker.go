@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -204,7 +207,7 @@ func (w *RecoveryWorker) processCartRecovery(ctx context.Context, merchantID, ph
 	}
 
 	// 6. Route to CRM or fall back through direct WhatsApp tiers
-	w.executeRouting(ctx, merchant, settings, rawPhone, phoneHash, event)
+	w.executeRouting(ctx, merchant, settings, rawPhone, phoneHash, event, "your cart")
 }
 
 func (w *RecoveryWorker) processPostPurchaseFeedback(ctx context.Context, merchantID, phoneHash, orderID string) {
@@ -272,7 +275,14 @@ func (w *RecoveryWorker) processPostPurchaseFeedback(ctx context.Context, mercha
 		SegmentTag:    segmentTag,
 	}
 
-	w.executeRouting(ctx, merchant, settings, rawPhone, phoneHash, event)
+	// Load the order value from the database if available
+	orderValueStr := "your order"
+	var billableEvent domain.BillableEvent
+	if err := w.pg.WithContext(ctx).Where("order_id = ? AND merchant_id = ?", orderID, merchantID).First(&billableEvent).Error; err == nil {
+		orderValueStr = fmt.Sprintf("Rs. %.2f", float64(billableEvent.OrderValuePaise)/100.0)
+	}
+
+	w.executeRouting(ctx, merchant, settings, rawPhone, phoneHash, event, orderValueStr)
 }
 
 // executeRouting implements the three-tier routing hierarchy:
@@ -288,6 +298,7 @@ func (w *RecoveryWorker) executeRouting(
 	settings *domain.MerchantSettings,
 	rawPhone, phoneHash string,
 	event crm.KotmanRiskEvent,
+	orderValue string,
 ) {
 	// TIER 1: CRM connector
 	// CORRECT: CRM push requires MODULE 3 (HasCRMUpsellEngine)
@@ -336,9 +347,12 @@ func (w *RecoveryWorker) executeRouting(
 			"provider", settings.ProviderName,
 			"merchant_id", settings.MerchantID,
 		)
-		w.sendWhatsApp(ctx, rawPhone, phoneHash, event.Template, event.DiscountValue,
-			settings.ProviderAPIKey, settings.ProviderName)
-		return
+		err := w.sendWhatsApp(ctx, rawPhone, phoneHash, event.Template, event.DiscountValue,
+			settings.ProviderAPIKey, settings.ProviderName, merchant.StoreName, orderValue)
+		if err == nil {
+			return
+		}
+		slog.Error("Tier 2 WhatsApp send failed — falling through to Tier 3", "error", err)
 	}
 
 	// TIER 3: Kotman managed wallet
@@ -365,8 +379,11 @@ func (w *RecoveryWorker) executeRouting(
 			return
 		}
 
-		w.sendWhatsApp(ctx, rawPhone, phoneHash, event.Template, event.DiscountValue,
-			masterKey, "twilio")
+		err := w.sendWhatsApp(ctx, rawPhone, phoneHash, event.Template, event.DiscountValue,
+			masterKey, "twilio", merchant.StoreName, orderValue)
+		if err != nil {
+			slog.Error("Tier 3 WhatsApp send failed", "error", err)
+		}
 		return
 	}
 
@@ -456,53 +473,137 @@ func (w *RecoveryWorker) safeRTOCount(profile *domain.TrustProfile, err error) i
 	return profile.TotalRTOs
 }
 
+var (
+	interaktAPIURL  = "https://api.interakt.ai/v1/public/message/"
+	whatsappTimeout = 10 * time.Second
+)
+
 // sendWhatsApp dispatches a WhatsApp message via the specified provider.
-// FIX: ctx added as first parameter so the real HTTP call can respect
-// cancellation and timeouts without a refactor of the call sites.
-//
-// providerName: "twilio" | "interakt"
-// Production: replace the slog stub with an HTTP POST to the provider's API.
+// ctx is passed as first parameter for http.NewRequestWithContext.
 func (w *RecoveryWorker) sendWhatsApp(
 	ctx context.Context,
 	rawPhone, phoneHash, template string,
 	discount int,
 	apiKey, providerName string,
-) {
+	merchantName, orderValue string,
+) error {
 	// Mask phone — never log raw PII
 	masked := "91**********"
 	if len(rawPhone) > 8 {
 		masked = rawPhone[:4] + "****" + rawPhone[len(rawPhone)-2:]
 	}
 
-	slog.Info("whatsapp dispatched",
+	provider := os.Getenv("WHATSAPP_PROVIDER")
+	if provider == "" {
+		provider = providerName
+	}
+
+	slog.Info("whatsapp dispatch initiated",
 		"recipient_masked", masked,
 		"template", template,
 		"incentive_pct", discount,
 		"hash", safePreview(phoneHash),
-		"provider", providerName,
+		"provider", provider,
 		"has_api_key", apiKey != "",
 	)
 
-	// Production dispatch — switch on provider and POST to their API.
-	// ctx is available here for http.NewRequestWithContext.
-	switch providerName {
+	switch provider {
 	case "twilio":
-		// POST https://api.twilio.com/2010-04-01/Accounts/{AccountSid}/Messages.json
-		// Body: To=whatsapp:+{rawPhone}&From=whatsapp:+{twilioNumber}&Body={templateText}
-		// Auth: Basic base64(AccountSid:AuthToken) where apiKey = "AccountSid:AuthToken"
-		_ = ctx // placeholder until implementation
-		slog.Debug("twilio dispatch stub — implement HTTP POST here")
+		slog.Debug("twilio dispatch stub — Twilio send not implemented yet")
+		return nil
 
 	case "interakt":
-		// POST https://api.interakt.ai/v1/public/message/
-		// Headers: Authorization: Basic {base64(apiKey)}
-		// Body: {"countryCode":"+91","phoneNumber":"{rawPhone}","type":"Template",
-		//         "template":{"name":"{template}","languageCode":"en"}}
-		_ = ctx // placeholder until implementation
-		slog.Debug("interakt dispatch stub — implement HTTP POST here")
+		interaktKey := os.Getenv("INTERAKT_API_KEY")
+		if interaktKey == "" {
+			interaktKey = apiKey
+		}
+		if interaktKey == "" {
+			return fmt.Errorf("interakt: API key is not configured")
+		}
+
+		templateName := os.Getenv("WHATSAPP_TEMPLATE_NAME")
+		if templateName == "" {
+			templateName = template
+		}
+
+		// Strip country code from phone number if present
+		phoneWithoutCountry := rawPhone
+		if strings.HasPrefix(phoneWithoutCountry, "+91") {
+			phoneWithoutCountry = strings.TrimPrefix(phoneWithoutCountry, "+91")
+		} else if strings.HasPrefix(phoneWithoutCountry, "91") && len(phoneWithoutCountry) > 10 {
+			phoneWithoutCountry = strings.TrimPrefix(phoneWithoutCountry, "91")
+		}
+
+		// Build request body
+		type interaktTemplate struct {
+			Name         string   `json:"name"`
+			LanguageCode string   `json:"languageCode"`
+			BodyValues   []string `json:"bodyValues"`
+		}
+		type interaktPayload struct {
+			CountryCode  string           `json:"countryCode"`
+			PhoneNumber  string           `json:"phoneNumber"`
+			CallbackData string           `json:"callbackData"`
+			Type         string           `json:"type"`
+			Template     interaktTemplate `json:"template"`
+		}
+
+		payload := interaktPayload{
+			CountryCode:  "+91",
+			PhoneNumber:  phoneWithoutCountry,
+			CallbackData: "kotman_rto_check",
+			Type:         "Template",
+			Template: interaktTemplate{
+				Name:         templateName,
+				LanguageCode: "en",
+				BodyValues:   []string{merchantName, orderValue},
+			},
+		}
+
+		bodyBytes, err := json.Marshal(payload)
+		if err != nil {
+			return fmt.Errorf("interakt: marshal payload failed: %w", err)
+		}
+
+		// Set 10-second timeout context
+		sendCtx, cancel := context.WithTimeout(ctx, whatsappTimeout)
+		defer cancel()
+
+		req, err := http.NewRequestWithContext(sendCtx, http.MethodPost, interaktAPIURL, bytes.NewReader(bodyBytes))
+		if err != nil {
+			return fmt.Errorf("interakt: create request failed: %w", err)
+		}
+
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Basic "+interaktKey)
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			if sendCtx.Err() == context.DeadlineExceeded {
+				slog.Error("whatsapp send failed: timeout sending to interakt", "error", err)
+			} else {
+				slog.Error("whatsapp send failed sending to interakt", "error", err)
+			}
+			return err
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+			slog.Error("whatsapp send failed with client error (4xx), will not retry", "status", resp.StatusCode)
+			return nil // do not retry
+		}
+
+		if resp.StatusCode >= 500 {
+			slog.Error("whatsapp send failed with server error (5xx)", "status", resp.StatusCode)
+			return fmt.Errorf("interakt provider returned 5xx status: %d", resp.StatusCode)
+		}
+
+		slog.Info("whatsapp message sent successfully via interakt", "recipient_masked", masked)
+		return nil
 
 	default:
-		slog.Warn("unknown WhatsApp provider — message not sent", "provider", providerName)
+		slog.Warn("unknown WhatsApp provider — message not sent", "provider", provider)
+		return nil
 	}
 }
 

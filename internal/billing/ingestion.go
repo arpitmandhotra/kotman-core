@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/arpitmandhotra/api-integrator/internal/classification"
 	"github.com/arpitmandhotra/api-integrator/internal/crypto"
 	"github.com/arpitmandhotra/api-integrator/internal/domain"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -400,7 +401,101 @@ func ProcessInboundOrder(ctx context.Context, platform string, merchantID string
 		"requires_review", checkoutResult.RequiresReview,
 	)
 
+	// ═══════════════════════════════════════════════════════════════
+	// SIGNALS SUBSYSTEM — Async classification & geo enrichment
+	// Runs in a separate goroutine with its own 10s timeout.
+	// Never blocks the webhook response. If classification fails,
+	// log and move on — missing data just excludes from aggregation.
+	// ═══════════════════════════════════════════════════════════════
+	go func(eventID uint, rawJSON string) {
+		classCtx, classCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer classCancel()
+
+		// Parse line_items and shipping_address from the stored webhook body
+		var webhookData struct {
+			LineItems []struct {
+				Title string      `json:"title"`
+				Price interface{} `json:"price"`
+			} `json:"line_items"`
+			ShippingAddress struct {
+				Province string `json:"province"`
+			} `json:"shipping_address"`
+		}
+		if err := json.Unmarshal([]byte(rawJSON), &webhookData); err != nil {
+			slog.Warn("signals: failed to parse webhook body for classification",
+				"event_id", eventID, "error", err)
+			return
+		}
+
+		// Pick the highest-value line item as the classification target
+		bestTitle := ""
+		bestPrice := 0.0
+		for _, item := range webhookData.LineItems {
+			price := 0.0
+			if item.Price != nil {
+				price, _ = parseLineItemPrice(item.Price)
+			}
+			if price > bestPrice || bestTitle == "" {
+				bestPrice = price
+				bestTitle = item.Title
+			}
+		}
+		if bestTitle == "" {
+			slog.Debug("signals: no line items found for classification", "event_id", eventID)
+			return
+		}
+
+		// Classify product via LLM (cached — won't call API for repeated titles)
+		catL1, catL2, classErr := classification.ClassifyProduct(classCtx, bestTitle, DB)
+		if classErr != nil {
+			slog.Warn("signals: product classification failed",
+				"event_id", eventID, "title", bestTitle, "error", classErr)
+			// Continue with geo extraction even if classification fails
+		}
+
+		// Extract geo from shipping_address.province
+		geoState, geoTier := classification.LookupGeoTier(webhookData.ShippingAddress.Province)
+
+		// Single UPDATE — no read-modify-write
+		updateFields := map[string]interface{}{
+			"category_l1": catL1,
+			"category_l2": catL2,
+			"geo_state":   geoState,
+			"geo_tier":    geoTier,
+		}
+		result := DB.WithContext(classCtx).Model(&domain.BillableEvent{}).
+			Where("id = ?", eventID).
+			Updates(updateFields)
+		if result.Error != nil {
+			slog.Warn("signals: failed to update BillableEvent with classification",
+				"event_id", eventID, "error", result.Error)
+			return
+		}
+
+		slog.Info("signals: enriched order with classification + geo",
+			"event_id", eventID,
+			"category_l1", catL1,
+			"category_l2", catL2,
+			"geo_state", geoState,
+			"geo_tier", geoTier,
+		)
+	}(event.ID, payload.RawJSON)
+
 	return nil
+}
+
+// parseLineItemPrice extracts a float64 price from various JSON representations
+func parseLineItemPrice(raw interface{}) (float64, error) {
+	switch v := raw.(type) {
+	case float64:
+		return v, nil
+	case string:
+		return strconv.ParseFloat(strings.TrimSpace(v), 64)
+	case json.Number:
+		return v.Float64()
+	default:
+		return 0, fmt.Errorf("unsupported price type: %T", raw)
+	}
 }
 
 // ComputeFee returns whether an event is billable and what its fee is.
@@ -441,12 +536,13 @@ func ProcessOrderCreditBack(ctx context.Context, platform, merchantID, orderID s
 		// Keep a record of the original fee before waiving
 		waivedFeePaise := event.FeePaise
 
-		// Update event to waived state atomically
+		// Update event to waived state atomically, marking it as RTO
 		updateResult := tx.Model(&domain.BillableEvent{}).
 			Where("id = ? AND is_billable = ? AND fee_paise > ?", event.ID, true, 0).
 			Updates(map[string]interface{}{
 				"is_billable": false,
 				"fee_paise":   0,
+				"is_rto":      true,
 			})
 		if updateResult.Error != nil {
 			return fmt.Errorf("failed to mark event as waived: %w", updateResult.Error)

@@ -22,7 +22,13 @@ type BillableEvent struct {
 	RawWebhookBody  string     `gorm:"type:text"` // stores raw JSON for dispute resolution; MUST be redacted via GDPR webhooks. Only FeePaise, OrderValuePaise, PhoneHash, and CheckoutMode are permanent.
 	PhoneHash       string     `gorm:"index"`     // for cross-referencing TrustProfile
 	RequiresReview  bool       `gorm:"default:false"`
-	CreatedAt       time.Time  `gorm:"index"`
+	// --- SIGNALS SUBSYSTEM (additive — do not modify existing fields above) ---
+	IsRTO        bool   `gorm:"default:false"`           // true when order is confirmed as RTO/returned via ProcessOrderCreditBack
+	CategoryL1   string `gorm:"index;default:''"`         // "Apparel", "Electronics", "Footwear", "Cosmetics", "Home", "FMCG"
+	CategoryL2   string `gorm:"default:''"`               // "Ethnic Wear", "Smartphones", "Running Shoes", etc.
+	GeoState     string `gorm:"index;default:''"`         // extracted from shipping_address.province in the webhook JSON
+	GeoTier      int    `gorm:"default:0"`                // 1, 2, or 3 — derived from GeoState via geo_tier lookup
+	CreatedAt    time.Time  `gorm:"index"`
 }
 
 type MerchantInvoice struct {

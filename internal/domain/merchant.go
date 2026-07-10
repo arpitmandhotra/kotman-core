@@ -32,6 +32,9 @@ type Merchant struct {
 	CRMUpsellSubID       string     `gorm:"default:''"` // Razorpay subscription ID or manual ref
 	CrossNetworkRenewsAt *time.Time // nil until purchased
 	CRMUpsellRenewsAt    *time.Time // nil until purchased
+
+	// --- SIGNALS SUBSYSTEM ---
+	Vertical string `gorm:"default:''"` // "d2c_fashion" | "d2c_electronics" | "d2c_fmcg" | "d2c_beauty" | "d2c_home" | ""
 }
 
 // CrossNetworkActive returns true if the merchant has access to cross-network intelligence,
