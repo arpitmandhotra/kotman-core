@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/arpitmandhotra/api-integrator/internal/classification"
 	"github.com/arpitmandhotra/api-integrator/internal/domain"
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
@@ -230,3 +231,94 @@ func TestProcessOrderCreditBack(t *testing.T) {
 		t.Errorf("expected accumulator TotalFeePaise to be 0, got %d", accum.TotalFeePaise)
 	}
 }
+
+func TestProcessInboundOrder_SignalsAsynchronousEnrichment(t *testing.T) {
+	// Setup pure-Go SQLite in-memory database
+	db, err := gorm.Open(sqlite.Open("file::memory:?cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("failed to open sqlite database: %v", err)
+	}
+
+	// Import classification package structures
+	err = db.AutoMigrate(
+		&TestMerchantSettings{},
+		&domain.BillableEvent{},
+		&domain.MerchantBillingAccumulator{},
+		&classification.ProductCategoryCache{},
+	)
+	if err != nil {
+		t.Fatalf("failed to migrate models: %v", err)
+	}
+
+	DB = db
+
+	merchantID := "merchant-789"
+	mSettings := TestMerchantSettings{
+		ID:                 "settings-789",
+		MerchantID:         merchantID,
+		CheckoutMode:       "native",
+		WalletBalancePaise: 10000,
+	}
+	db.Create(&mSettings)
+
+	// Pre-seed classification cache to avoid Gemini API network calls
+	// SHA-256 of "smart phone" (lowercased, trimmed) is e75cdc89b7b1d235a7ee10bf6aa9ac2c30e07e7ae4236eb99288e0020e18cfc7
+	db.Create(&classification.ProductCategoryCache{
+		ProductTitleHash: "e75cdc89b7b1d235a7ee10bf6aa9ac2c30e07e7ae4236eb99288e0020e18cfc7",
+		CategoryL1:       "Electronics",
+		CategoryL2:       "Smartphones",
+		ClassifiedAt:     time.Now(),
+	})
+
+	rawJSON := `{
+		"id": 554433,
+		"total_price": "29999.00",
+		"payment_gateway": "manual",
+		"billing_address": {
+			"phone": "+919876543210"
+		},
+		"shipping_address": {
+			"province": "Maharashtra"
+		},
+		"line_items": [
+			{
+				"title": "smart phone",
+				"price": "29999.00"
+			}
+		]
+	}`
+
+	ctx := context.Background()
+	err = ProcessInboundOrder(ctx, "shopify", merchantID, []byte(rawJSON))
+	if err != nil {
+		t.Fatalf("ProcessInboundOrder failed: %v", err)
+	}
+
+	// Since enrichment is asynchronous, wait for up to 1 second
+	var event domain.BillableEvent
+	deadline := time.Now().Add(1 * time.Second)
+	for {
+		if err := db.Where("order_id = ?", "554433").First(&event).Error; err != nil {
+			t.Fatalf("failed to query event: %v", err)
+		}
+		if event.CategoryL1 != "" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timeout waiting for asynchronous signals enrichment")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Verify fields
+	if event.CategoryL1 != "Electronics" || event.CategoryL2 != "Smartphones" {
+		t.Errorf("expected category Electronics/Smartphones, got %q/%q", event.CategoryL1, event.CategoryL2)
+	}
+	if event.GeoState != "Maharashtra" {
+		t.Errorf("expected GeoState Maharashtra, got %q", event.GeoState)
+	}
+	if event.GeoTier != 1 {
+		t.Errorf("expected GeoTier 1, got %d", event.GeoTier)
+	}
+}
+
