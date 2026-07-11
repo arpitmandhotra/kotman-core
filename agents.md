@@ -23,3 +23,6 @@
 ## Deployment & CLI Operations
 - Database migrations (cmd/migrate/main.go) must be executed as a one-off ECS task prior to updating the live web server or background worker services.
 - The hard-purge CLI (cmd/purge/main.go) must be run on a daily scheduled cadence using an ECS Scheduled Task (EventBridge cron rule).
+
+## Code Sync Points
+- **Scoring Formula**: The inline score calculation in the Meta CAPI goroutine (`internal/billing/ingestion.go`), weekly audience sync query (`cmd/audience_sync/main.go`), and `redis_trust.go` (`internal/service/redis_trust.go`) must always remain in sync. If the scoring logic changes, all three locations must be updated simultaneously. Use comment `// SYNC WITH: internal/service/redis_trust.go EvaluateRisk` to find these locations.

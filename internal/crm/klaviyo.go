@@ -3,6 +3,11 @@
 import (
     "context"
     "fmt"
+    "math"
+    "time"
+    "log/slog"
+
+    "github.com/arpitmandhotra/api-integrator/internal/domain"
 )
 
 // KlaviyoConnector pushes Kotman risk signals into Klaviyo as profile properties
@@ -88,4 +93,91 @@ func (k *KlaviyoConnector) metricName(template string) string {
     default:
         return fmt.Sprintf("Kotman %s", template)
     }
+}
+
+// EnrichProfile computes the trust tier and custom properties from the trust profile and updates Klaviyo.
+func (k *KlaviyoConnector) EnrichProfile(ctx context.Context, rawPhone string, profile domain.TrustProfile, lastOrderCategory string) error {
+    enrichCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+    defer cancel()
+
+    // 1. Calculate Trust Score
+    trustScore := 100.0
+    rtoRate := 0.0
+    if profile.TotalOrders > 0 {
+        rtoRate = float64(profile.TotalRTOs) / float64(profile.TotalOrders)
+        cancelRate := float64(profile.TotalCancellations) / float64(profile.TotalOrders)
+        trustScore -= rtoRate * 60
+        trustScore -= cancelRate * 20
+        trustScore += profile.RiskAdjustment
+    } else {
+        trustScore = 85
+    }
+    if profile.IsBlacklisted {
+        trustScore = 5
+    }
+    if trustScore < 0 {
+        trustScore = 0
+    }
+    if trustScore > 100 {
+        trustScore = 100
+    }
+
+    // 2. Compute Trust Tier
+    var trustTier string
+    switch {
+    case trustScore >= 80:
+        trustTier = "Platinum"
+    case trustScore >= 60:
+        trustTier = "Gold"
+    case trustScore >= 40:
+        trustTier = "Silver"
+    default:
+        trustTier = "At-Risk"
+    }
+
+    // 3. COD Reliability
+    var codReliability string
+    if rtoRate < 0.10 {
+        codReliability = "High"
+    } else if rtoRate < 0.20 {
+        codReliability = "Medium"
+    } else {
+        codReliability = "Low"
+    }
+
+    roundedRtoRate := math.Round(rtoRate*10000) / 10000
+
+    payload := map[string]interface{}{
+        "data": map[string]interface{}{
+            "type": "profile",
+            "attributes": map[string]interface{}{
+                "phone_number": rawPhone,
+                "properties": map[string]interface{}{
+                    "kotman_trust_tier":           trustTier,
+                    "kotman_trust_score":          int(math.Round(trustScore)),
+                    "kotman_network_rto_rate":     roundedRtoRate,
+                    "kotman_total_network_orders": profile.TotalOrders,
+                    "kotman_preferred_category":   lastOrderCategory,
+                    "kotman_cod_reliability":      codReliability,
+                    "kotman_last_enriched":        time.Now().Format("2006-01-02"),
+                },
+            },
+        },
+    }
+
+    err := patchJSON(enrichCtx,
+        "https://a.klaviyo.com/api/profiles/",
+        map[string]string{
+            "Authorization": "Klaviyo-API-Key " + k.apiKey,
+            "revision":      "2024-10-15",
+        },
+        payload,
+    )
+    if err != nil {
+        slog.Error("klaviyo: failed to enrich profile", "phone", rawPhone, "error", err)
+        return nil
+    }
+
+    slog.Info("klaviyo: successfully enriched profile", "phone", rawPhone)
+    return nil
 }

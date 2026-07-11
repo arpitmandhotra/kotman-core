@@ -9,6 +9,8 @@ import (
     "log/slog"
     "net/http"
     "time"
+
+    "github.com/arpitmandhotra/api-integrator/internal/domain"
 )
 
 // KotmanRiskEvent is the standardised payload every CRM connector receives.
@@ -35,6 +37,8 @@ type Connector interface {
     // SyncRiskEvent pushes a Kotman risk event into the CRM as a contact
     // property update + triggers the appropriate automation workflow.
     SyncRiskEvent(ctx context.Context, event KotmanRiskEvent) error
+    // EnrichProfile updates the CRM contact with detailed Kotman profiling data.
+    EnrichProfile(ctx context.Context, rawPhone string, profile domain.TrustProfile, lastOrderCategory string) error
 }
 
 // httpClient is a package-level client shared by all CRM connectors.
@@ -73,6 +77,16 @@ func NewConnector(provider, apiKey, accountID string) (Connector, error) {
     default:
         return nil, fmt.Errorf("unknown CRM provider: %s", provider)
     }
+}
+
+// GetConnector wraps NewConnector, logs errors, and returns a Connector interface.
+func GetConnector(provider, apiKey, accountID string) Connector {
+    c, err := NewConnector(provider, apiKey, accountID)
+    if err != nil {
+        slog.Error("failed to get CRM connector", "provider", provider, "error", err)
+        return nil
+    }
+    return c
 }
 
 // postJSON is a shared HTTP helper used by all connectors.
