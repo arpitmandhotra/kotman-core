@@ -18,7 +18,11 @@ import (
 	"time"
 )
 
-const Scopes = "read_orders,read_customers,write_orders"
+// NOTE: read_all_orders added alongside read_orders so Shopify honours the
+// created_at_min parameter for dates older than 60 days during backfill.
+// Existing merchants must re-authorise the app via OAuth to grant this scope.
+// Shopify Partner Dashboard approval is required before this scope works in production.
+const Scopes = "read_orders,read_customers,write_orders,read_all_orders"
 
 type ShopifyTokenResponse struct {
 	AccessToken  string `json:"access_token"`

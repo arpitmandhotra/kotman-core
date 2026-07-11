@@ -35,6 +35,16 @@ type Merchant struct {
 
 	// --- SIGNALS SUBSYSTEM ---
 	Vertical string `gorm:"default:''"` // "d2c_fashion" | "d2c_electronics" | "d2c_fmcg" | "d2c_beauty" | "d2c_home" | ""
+
+	// --- FULFILLMENT SYNC QUALITY ---
+	// Computed at the end of each BackfillOrderHistory run (Shopify only).
+	// Fraction of orders older than 45 days that have a non-null fulfillment_status.
+	// Range: 0.0 (no sync at all) to 1.0 (perfect sync).
+	// NULL means not yet computed — treated as "untrusted" by the RTO proxy gate.
+	// Merchants below 0.60 have the unfulfilled-paid RTO proxy suppressed to
+	// prevent mislabelling delivered orders as RTOs.
+	FulfillmentSyncQuality    *float64   `gorm:"type:numeric(5,4);default:null" json:"fulfillment_sync_quality,omitempty"`
+	FulfillmentSyncComputedAt *time.Time `gorm:"default:null"                   json:"fulfillment_sync_computed_at,omitempty"`
 }
 
 // CrossNetworkActive returns true if the merchant has access to cross-network intelligence,

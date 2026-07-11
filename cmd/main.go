@@ -200,6 +200,8 @@ func main() {
 	adminGroup.Get("/billing/invoices", adminHandler.GetInvoices)
 	adminGroup.Post("/billing/events/:event_id/override", adminHandler.OverrideEventFee)
 	adminGroup.Get("/subscriptions", adminHandler.GetSubscriptionStatus)
+	adminGroup.Post("/backfill/retrigger-all", adminHandler.RetriggerAllBackfills)
+	adminGroup.Get("/merchants/sync-quality", adminHandler.GetMerchantSyncQuality)
 
 	// ==========================================
 	// 5. HEALTH CHECK & START UP

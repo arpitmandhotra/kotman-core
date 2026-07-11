@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/arpitmandhotra/api-integrator/internal/crypto"
 	"github.com/arpitmandhotra/api-integrator/internal/domain"
+	"github.com/arpitmandhotra/api-integrator/internal/integrations/backfill"
 	"github.com/arpitmandhotra/api-integrator/internal/service"
 
 	"github.com/gofiber/fiber/v2"
@@ -465,7 +467,141 @@ func (h *AdminHandler) GetSubscriptionStatus(c *fiber.Ctx) error {
 	})
 }
 
+// QueryMerchantSyncQualityAudit is the canonical SQL audit query for merchant
+// fulfillment sync quality. Run after backfill to identify merchants whose
+// broken Shopify courier integrations would cause the unfulfilled-paid RTO proxy
+// to mislabel delivered orders. Merchants in "low_suppress_rto_proxy" tier have
+// the proxy automatically suppressed until their sync quality improves.
+const QueryMerchantSyncQualityAudit = `
+SELECT
+    m.id,
+    m.store_name,
+    m.created_at                      AS onboarded_at,
+    m.fulfillment_sync_quality,
+    m.fulfillment_sync_computed_at,
+    CASE
+        WHEN m.fulfillment_sync_quality IS NULL     THEN 'not_computed'
+        WHEN m.fulfillment_sync_quality >= 0.80     THEN 'high'
+        WHEN m.fulfillment_sync_quality >= 0.60     THEN 'medium'
+        ELSE                                             'low_suppress_rto_proxy'
+    END AS sync_tier,
+    COUNT(DISTINCT be.phone_hash)     AS linked_buyer_count
+FROM merchants m
+LEFT JOIN billable_events be ON be.merchant_id = m.id
+GROUP BY m.id, m.store_name, m.created_at,
+         m.fulfillment_sync_quality, m.fulfillment_sync_computed_at
+ORDER BY m.fulfillment_sync_quality ASC NULLS FIRST
+`
+
+// GetMerchantSyncQuality handles GET /v1/admin/merchants/sync-quality
+//
+// Returns sync quality tiers for all merchants so you can identify which stores
+// have broken Shopify fulfilment integrations and action them.
+func (h *AdminHandler) GetMerchantSyncQuality(c *fiber.Ctx) error {
+	type MerchantSyncRow struct {
+		ID                       string   `json:"id"`
+		StoreName                string   `json:"store_name"`
+		OnboardedAt              string   `json:"onboarded_at"`
+		FulfillmentSyncQuality   *float64 `json:"fulfillment_sync_quality"`
+		FulfillmentSyncComputedAt *string `json:"fulfillment_sync_computed_at"`
+		SyncTier                 string   `json:"sync_tier"`
+		LinkedBuyerCount         int      `json:"linked_buyer_count"`
+	}
+
+	rows, err := h.pg.WithContext(c.UserContext()).Raw(QueryMerchantSyncQualityAudit).Rows()
+	if err != nil {
+		slog.Error("GetMerchantSyncQuality: query failed", "error", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"success": false,
+			"error":   "query failed",
+		})
+	}
+	defer rows.Close()
+
+	results := make([]MerchantSyncRow, 0)
+	for rows.Next() {
+		var row MerchantSyncRow
+		if err := rows.Scan(
+			&row.ID,
+			&row.StoreName,
+			&row.OnboardedAt,
+			&row.FulfillmentSyncQuality,
+			&row.FulfillmentSyncComputedAt,
+			&row.SyncTier,
+			&row.LinkedBuyerCount,
+		); err != nil {
+			slog.Error("GetMerchantSyncQuality: scan failed", "error", err)
+			continue
+		}
+		results = append(results, row)
+	}
+
+	return c.JSON(fiber.Map{
+		"success": true,
+		"count":   len(results),
+		"data":    results,
+	})
+}
+
 // TODO (V1.1): Add POST /v1/admin/subscriptions/:id/cancel endpoint.
 // For now, manually UPDATE merchant_subscriptions SET status='cancelled',
 // cancelled_at=NOW() WHERE id=? and then UPDATE merchants SET
 // has_cross_network_intel=false / has_crm_upsell_engine=false WHERE id=?
+
+// RetriggerAllBackfills handles POST /v1/admin/backfill/retrigger-all
+//
+// Re-runs BackfillOrderHistory for all active Shopify merchants that have
+// completed a previous backfill. Because BackfillOrderHistory uses the
+// backfilled_orders idempotency table internally, already-processed order IDs
+// are skipped automatically — only orders older than 60 days that were missed
+// by the previous truncation bug will be ingested. Safe to call multiple times.
+func (h *AdminHandler) RetriggerAllBackfills(c *fiber.Ctx) error {
+	// Fetch all active merchants that have at least one Shopify credential
+	var creds []domain.PlatformCredential
+	if err := h.pg.WithContext(c.UserContext()).
+		Where("platform = ? AND is_active = ?", "shopify", true).
+		Find(&creds).Error; err != nil {
+		slog.Error("retrigger_all_backfills: failed to fetch shopify credentials", "error", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"success": false,
+			"error":   "failed to query merchant credentials",
+		})
+	}
+
+	if len(creds) == 0 {
+		return c.JSON(fiber.Map{
+			"success":            true,
+			"merchants_found":    0,
+			"message":            "no active Shopify merchants found",
+		})
+	}
+
+	slog.Info("retrigger_all_backfills: launching re-backfill jobs",
+		"merchant_count", len(creds),
+	)
+
+	// Kick off one goroutine per merchant — BackfillOrderHistory enforces its
+	// own concurrency cap (5 slots) so we will not flood the DB.
+	for _, cred := range creds {
+		merchantID := cred.MerchantID
+		go func(mID string) {
+			ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
+			defer cancel()
+			slog.Info("retrigger_all_backfills: starting backfill for merchant", "merchant_id", mID)
+			if err := backfill.BackfillOrderHistory(ctx, mID, "shopify"); err != nil {
+				slog.Error("retrigger_all_backfills: backfill failed",
+					"merchant_id", mID,
+					"error", err,
+				)
+				return
+			}
+			slog.Info("retrigger_all_backfills: backfill complete for merchant", "merchant_id", mID)
+		}(merchantID)
+	}
+
+	return c.JSON(fiber.Map{
+		"success":         true,
+		"merchants_found": len(creds),
+		"message":         "backfill jobs launched asynchronously — check server logs for per-merchant progress",
+	})
+}
