@@ -7,6 +7,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -15,6 +17,7 @@ import (
 	"github.com/arpitmandhotra/api-integrator/internal/database"
 	"github.com/arpitmandhotra/api-integrator/internal/domain"
 	"github.com/arpitmandhotra/api-integrator/internal/integrations/woocommerce"
+	"golang.org/x/time/rate"
 )
 
 // TokenBucket implements a thread-safe token bucket rate limiter.
@@ -117,6 +120,18 @@ func BackfillOrderHistory(ctx context.Context, merchantID, platform string) erro
 	uniqueHashes := make(map[string]bool)
 	preExistingRiskCount := 0
 
+	// Data quality counters (Shopify only — scoped inside the switch below)
+	var (
+		validPhoneCount    int
+		rejectedPhoneCount int
+		rtoCount           int
+		deliveredCount     int
+
+		// Fulfillment sync quality inputs
+		ordersOlderThan45Days       int // denominator
+		ordersWithFulfillmentStatus int // numerator
+	)
+
 	switch platform {
 	case "shopify":
 		token, err := crypto.DecryptToken(cred.AccessTokenEncrypted)
@@ -124,10 +139,28 @@ func BackfillOrderHistory(ctx context.Context, merchantID, platform string) erro
 			return fmt.Errorf("failed to decrypt access token: %w", err)
 		}
 
-		// Implement Shopify rate limiter: 2 requests/sec
-		limiter := NewTokenBucket(2.0, 40.0)
+		// FIX 2: burst=40 matches Shopify's stated REST bucket; refills at 2 req/sec.
+		limiter := rate.NewLimiter(rate.Limit(2), 40)
 
-		nextURL := fmt.Sprintf("https://%s/admin/api/2026-01/orders.json?status=any&limit=250", cred.ShopDomain)
+		// FIX 1: created_at_min prevents Shopify's silent 60-day truncation.
+		cutoff := time.Now().UTC().AddDate(0, -18, 0)
+		cutoffStr := cutoff.Format(time.RFC3339)
+		nextURL := fmt.Sprintf(
+			"https://%s/admin/api/2026-01/orders.json?status=any&limit=250&created_at_min=%s&order=created_at%%20asc",
+			cred.ShopDomain,
+			url.QueryEscape(cutoffStr),
+		)
+
+		// Sync quality gate: read the value computed from the PREVIOUS backfill run.
+		// On first run this will be NULL → syncQualityTrusted = false → RTO proxy suppressed (safe default).
+		// On retrigger runs, a computed value gates the proxy correctly for well-integrated merchants.
+		const syncQualityThreshold = 0.60
+		var merchantSyncQuality *float64
+		var merchantForSync domain.Merchant
+		if pg.Where("id = ?", merchantID).First(&merchantForSync).Error == nil {
+			merchantSyncQuality = merchantForSync.FulfillmentSyncQuality
+		}
+		syncQualityTrusted := merchantSyncQuality != nil && *merchantSyncQuality >= syncQualityThreshold
 
 		for nextURL != "" {
 			if err := limiter.Wait(ctx); err != nil {
@@ -145,13 +178,33 @@ func BackfillOrderHistory(ctx context.Context, merchantID, platform string) erro
 				return fmt.Errorf("Shopify API call failed: %w", err)
 			}
 
+			// FIX 2: 429 handling — read Shopify's Retry-After header.
+			// continue retries the same nextURL (does NOT advance to next page).
+			if resp.StatusCode == http.StatusTooManyRequests {
+				retryAfter := resp.Header.Get("Retry-After")
+				waitSeconds := 2.0
+				if retryAfter != "" {
+					if parsed, parseErr := strconv.ParseFloat(retryAfter, 64); parseErr == nil {
+						waitSeconds = parsed
+					}
+				}
+				resp.Body.Close()
+				slog.Warn("shopify rate limit hit, backing off",
+					"retry_after_seconds", waitSeconds,
+					"merchant_id", merchantID,
+				)
+				time.Sleep(time.Duration(waitSeconds * float64(time.Second)))
+				continue
+			}
+
 			var payload struct {
 				Orders []struct {
-					ID              int64   `json:"id"`
-					FinancialStatus string  `json:"financial_status"`
-					FulfillmentStatus string `json:"fulfillment_status"`
-					CancelledAt     *string `json:"cancelled_at"`
-					Customer        *struct {
+					ID                int64     `json:"id"`
+					FinancialStatus   string    `json:"financial_status"`
+					FulfillmentStatus string    `json:"fulfillment_status"`
+					CancelledAt       *string   `json:"cancelled_at"`
+					CreatedAt         time.Time `json:"created_at"`
+					Customer          *struct {
 						Phone string `json:"phone"`
 					} `json:"customer"`
 					BillingAddress *struct {
@@ -163,7 +216,7 @@ func BackfillOrderHistory(ctx context.Context, merchantID, platform string) erro
 				} `json:"orders"`
 			}
 
-			err = json.NewDecoder(io.LimitReader(resp.Body, 10<<20)).Decode(&payload) // 10MB cap for batch
+			err = json.NewDecoder(io.LimitReader(resp.Body, 10<<20)).Decode(&payload)
 			resp.Body.Close()
 			if err != nil {
 				return fmt.Errorf("failed to decode Shopify response: %w", err)
@@ -174,27 +227,60 @@ func BackfillOrderHistory(ctx context.Context, merchantID, platform string) erro
 			}
 
 			for _, order := range payload.Orders {
-				phone := ""
-				if order.Customer != nil && order.Customer.Phone != "" {
-					phone = order.Customer.Phone
-				} else if order.BillingAddress != nil && order.BillingAddress.Phone != "" {
-					phone = order.BillingAddress.Phone
-				} else if order.ShippingAddress != nil && order.ShippingAddress.Phone != "" {
-					phone = order.ShippingAddress.Phone
-				}
-
-				if phone == "" {
-					continue
-				}
-
-				hash := crypto.HashPhone(phone)
-				uniqueHashes[hash] = true
 				orderIDStr := fmt.Sprintf("%d", order.ID)
+
+				// ── FULFILLMENT SYNC QUALITY INPUTS ────────────────────────────
+				// Track independently of phone validity — all orders contribute.
+				cutoff45 := time.Now().UTC().AddDate(0, 0, -45)
+				if order.CreatedAt.UTC().Before(cutoff45) {
+					ordersOlderThan45Days++
+					if order.FulfillmentStatus != "" {
+						ordersWithFulfillmentStatus++
+					}
+				}
+
+				// ── PHONE EXTRACTION (unchanged priority logic) ─────────────────
+				rawPhone := ""
+				if order.Customer != nil && order.Customer.Phone != "" {
+					rawPhone = order.Customer.Phone
+				} else if order.BillingAddress != nil && order.BillingAddress.Phone != "" {
+					rawPhone = order.BillingAddress.Phone
+				} else if order.ShippingAddress != nil && order.ShippingAddress.Phone != "" {
+					rawPhone = order.ShippingAddress.Phone
+				}
+
+				// ── PHONE VALIDATION GATE ───────────────────────────────────────
+				// Every order counts for total_orders regardless of phone quality.
+				// Only orders with valid phones enter the buyer trust network.
+				cleanPhone, phoneValid := validateIndianMobilePhone(rawPhone)
+				if !phoneValid {
+					slog.Debug("phone rejected by validator, order counted but not network-linked",
+						"order_id", order.ID,
+						"merchant_id", merchantID,
+						"raw_phone_length", len(rawPhone), // length only — never log the value
+					)
+					rejectedPhoneCount++
+					// Still record the order in the idempotency table so retriggers
+					// don't re-process it, but skip trust profile upsert.
+					var existing domain.BackfilledOrder
+					if pg.Where("merchant_id = ? AND order_id = ?", merchantID, orderIDStr).First(&existing).Error != nil {
+						pg.Create(&domain.BackfilledOrder{
+							MerchantID: merchantID,
+							Platform:   "shopify",
+							OrderID:    orderIDStr,
+						})
+						totalProcessed++
+					}
+					continue // skip hash + trust score upsert
+				}
+				validPhoneCount++
+
+				hash := crypto.HashPhone(cleanPhone)
+				uniqueHashes[hash] = true
 
 				// Idempotency: skip if already processed
 				var existing domain.BackfilledOrder
-				err := pg.Where("merchant_id = ? AND order_id = ?", merchantID, orderIDStr).First(&existing).Error
-				if err == nil {
+				if pg.Where("merchant_id = ? AND order_id = ?", merchantID, orderIDStr).First(&existing).Error == nil {
 					continue // already backfilled
 				}
 
@@ -205,13 +291,38 @@ func BackfillOrderHistory(ctx context.Context, merchantID, platform string) erro
 					OrderID:    orderIDStr,
 				})
 
-				// Increment metrics
+				// ── RTO DETECTION ──────────────────────────────────────────────
+				// The unfulfilled-paid proxy is gated on syncQualityTrusted.
+				// First run: NULL quality → proxy suppressed (conservative, safe).
+				// Retrigger: computed quality gates the proxy for calibrated accuracy.
+				orderAge := time.Since(order.CreatedAt.UTC())
+				isUnfulfilledPaidRTO := syncQualityTrusted &&
+					order.FulfillmentStatus == "" &&
+					order.FinancialStatus == "paid" &&
+					orderAge > 30*24*time.Hour
+
+				if isUnfulfilledPaidRTO {
+					slog.Debug("flagging unfulfilled paid order as RTO proxy",
+						"order_id", order.ID,
+						"merchant_id", merchantID,
+						"order_age_days", int(orderAge.Hours()/24),
+					)
+				}
+
+				isRTO := order.FinancialStatus == "refunded" ||
+					order.FinancialStatus == "voided" ||
+					order.CancelledAt != nil ||
+					isUnfulfilledPaidRTO
+
+				// Increment trust metrics
 				database.IncrementMetric(pg, hash, "total_orders")
 				if order.FulfillmentStatus == "fulfilled" {
 					database.IncrementMetric(pg, hash, "successful_deliveries")
+					deliveredCount++
 				}
-				if order.CancelledAt != nil || order.FinancialStatus == "refunded" || order.FinancialStatus == "voided" {
+				if isRTO {
 					database.IncrementMetric(pg, hash, "total_rtos")
+					rtoCount++
 				}
 
 				totalProcessed++
@@ -221,6 +332,37 @@ func BackfillOrderHistory(ctx context.Context, merchantID, platform string) erro
 			}
 
 			nextURL = parseNextPageURL(resp.Header.Get("Link"))
+		}
+
+		// ── FULFILLMENT SYNC QUALITY WRITE ──────────────────────────────────
+		// Computed AFTER all pages are processed — we need the full picture.
+		// This value is used by the RTO proxy gate on the NEXT retrigger run.
+		if ordersOlderThan45Days >= 50 {
+			syncQuality := float64(ordersWithFulfillmentStatus) / float64(ordersOlderThan45Days)
+			now := time.Now().UTC()
+			if err := pg.Model(&domain.Merchant{}).Where("id = ?", merchantID).Updates(map[string]interface{}{
+				"fulfillment_sync_quality":     syncQuality,
+				"fulfillment_sync_computed_at": now,
+			}).Error; err != nil {
+				// Non-fatal: log and continue — do not fail the whole backfill.
+				slog.Error("failed to update fulfillment sync quality",
+					"merchant_id", merchantID,
+					"error", err,
+				)
+			} else {
+				slog.Info("fulfillment sync quality computed",
+					"merchant_id", merchantID,
+					"sync_quality", fmt.Sprintf("%.4f", syncQuality),
+					"orders_sampled", ordersOlderThan45Days,
+					"synced_count", ordersWithFulfillmentStatus,
+					"rto_proxy_was_active", syncQualityTrusted,
+				)
+			}
+		} else {
+			slog.Info("fulfillment sync quality not computed — insufficient sample",
+				"merchant_id", merchantID,
+				"orders_older_than_45d", ordersOlderThan45Days,
+			)
 		}
 
 	case "woocommerce":
@@ -433,6 +575,10 @@ func BackfillOrderHistory(ctx context.Context, merchantID, platform string) erro
 		"merchant_id", merchantID,
 		"platform", platform,
 		"total_orders_processed", totalProcessed,
+		"orders_with_valid_phone", validPhoneCount,
+		"orders_phone_rejected", rejectedPhoneCount,
+		"orders_flagged_rto", rtoCount,
+		"orders_delivered", deliveredCount,
 		"total_unique_hashes_created", len(uniqueHashes),
 		"flagged_pre_existing_risk", preExistingRiskCount,
 	)
