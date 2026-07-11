@@ -4,6 +4,8 @@ import (
     "context"
     "encoding/base64"
     "fmt"
+
+    "github.com/arpitmandhotra/api-integrator/internal/domain"
 )
 
 // MoEngageConnector pushes Kotman risk events to MoEngage's Data API.
@@ -104,4 +106,8 @@ func (m *MoEngageConnector) eventName(template string) string {
     default:
         return "kotman_event"
     }
+}
+
+func (m *MoEngageConnector) EnrichProfile(ctx context.Context, rawPhone string, profile domain.TrustProfile, lastOrderCategory string) error {
+    return nil
 }

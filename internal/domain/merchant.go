@@ -92,6 +92,17 @@ type MerchantSettings struct {
     BillingCycleDay     int    `gorm:"default:1"` // day of month invoices are generated (1 = first of month)
     AutoInvoiceEnabled  bool   `gorm:"default:true"`
 
+    // --- META ADS INTEGRATION (all nullable — feature is opt-in) ---
+    // Note: MetaAccessToken is a Meta System User token (not a short-lived user token).
+    // It does NOT expire unless manually revoked. We store it as plaintext for now because
+    // it is not an OAuth token and AES encryption would add complexity without meaningful
+    // benefit, since a database breach would already expose the public MetaPixelID.
+    MetaPixelID        string `gorm:"default:''"`  // e.g. "1234567890123456"
+    MetaAccessToken    string `gorm:"default:''"`  // System User access token
+    MetaAdAccountID   string `gorm:"default:''"`  // e.g. "act_1234567890"
+    MetaTestEventCode string `gorm:"default:''"`  // only set in staging/dev
+    MetaCAPIEnabled   bool   `gorm:"default:false"` // master on/off switch
+
     CreatedAt time.Time
     UpdatedAt time.Time
 }

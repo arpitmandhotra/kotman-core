@@ -21,6 +21,15 @@ type BillableEvent struct {
 	InvoiceID       string     `gorm:"index;default:''"`
 	RawWebhookBody  string     `gorm:"type:text"` // stores raw JSON for dispute resolution; MUST be redacted via GDPR webhooks. Only FeePaise, OrderValuePaise, PhoneHash, and CheckoutMode are permanent.
 	PhoneHash       string     `gorm:"index"`     // for cross-referencing TrustProfile
+	// PhoneHashMeta stores a standard SHA-256 of the raw phone number WITHOUT
+	// the Kotman pepper, because Meta's identity graph requires plain SHA-256
+	// for cross-device matching. Unlike PhoneHash (peppered HMAC, reversible
+	// only with the pepper), SHA-256 without a pepper is theoretically
+	// vulnerable to rainbow-table attacks given India's finite 10-digit phone
+	// space. Mitigation: this hash is stored but never logged, never exposed
+	// in API responses, and access-controlled at the DB level. Merchants must
+	// disclose this in their privacy policy under "third-party ad enrichment."
+	PhoneHashMeta   string     `gorm:"index;default:''"` // SHA-256 (no pepper) for Meta CAPI
 	RequiresReview  bool       `gorm:"default:false"`
 	// --- SIGNALS SUBSYSTEM (additive — do not modify existing fields above) ---
 	IsRTO        bool   `gorm:"default:false"`           // true when order is confirmed as RTO/returned via ProcessOrderCreditBack

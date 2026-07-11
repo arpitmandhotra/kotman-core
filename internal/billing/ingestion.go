@@ -14,7 +14,9 @@ import (
 
 	"github.com/arpitmandhotra/api-integrator/internal/classification"
 	"github.com/arpitmandhotra/api-integrator/internal/crypto"
+	"github.com/arpitmandhotra/api-integrator/internal/crm"
 	"github.com/arpitmandhotra/api-integrator/internal/domain"
+	"github.com/arpitmandhotra/api-integrator/internal/integrations/meta"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
@@ -172,6 +174,10 @@ func ProcessInboundOrder(ctx context.Context, platform string, merchantID string
 	var tags []string
 	var sourceName string
 
+	var rawPhone string
+	var email string
+	var cityName string
+
 	switch payload.Platform {
 	case "shopify":
 		payload.PlatformOrderID = getString(rawPayload, "id")
@@ -186,6 +192,18 @@ func ProcessInboundOrder(ctx context.Context, platform string, merchantID string
 			if cust, ok := rawPayload["customer"].(map[string]interface{}); ok {
 				payload.PhoneRaw = getString(cust, "phone")
 			}
+		}
+		rawPhone = payload.PhoneRaw
+
+		email = getString(rawPayload, "email")
+		if email == "" {
+			if cust, ok := rawPayload["customer"].(map[string]interface{}); ok {
+				email = getString(cust, "email")
+			}
+		}
+
+		if shipAddr, ok := rawPayload["shipping_address"].(map[string]interface{}); ok {
+			cityName = getString(shipAddr, "city")
 		}
 
 		// Note attributes
@@ -218,6 +236,12 @@ func ProcessInboundOrder(ctx context.Context, platform string, merchantID string
 
 		if billingObj, ok := rawPayload["billing"].(map[string]interface{}); ok {
 			payload.PhoneRaw = getString(billingObj, "phone")
+			email = getString(billingObj, "email")
+		}
+		rawPhone = payload.PhoneRaw
+
+		if shippingObj, ok := rawPayload["shipping"].(map[string]interface{}); ok {
+			cityName = getString(shippingObj, "city")
 		}
 
 		// Meta data
@@ -247,6 +271,16 @@ func ProcessInboundOrder(ctx context.Context, platform string, merchantID string
 
 		if billAddr, ok := rawPayload["billing_address"].(map[string]interface{}); ok {
 			payload.PhoneRaw = getString(billAddr, "telephone")
+			email = getString(billAddr, "email")
+		}
+		rawPhone = payload.PhoneRaw
+
+		if email == "" {
+			email = getString(rawPayload, "customer_email")
+		}
+
+		if shipAddr, ok := rawPayload["shipping_address"].(map[string]interface{}); ok {
+			cityName = getString(shipAddr, "city")
 		}
 
 		if extAttrs, ok := rawPayload["extension_attributes"].(map[string]interface{}); ok {
@@ -273,6 +307,15 @@ func ProcessInboundOrder(ctx context.Context, platform string, merchantID string
 
 		payload.PaymentMethod = DetectPaymentMethod(platform, rawPayload)
 		payload.PhoneRaw = getString(rawPayload, "phone", "phone_number")
+		rawPhone = payload.PhoneRaw
+		email = getString(rawPayload, "email")
+		cityName = getString(rawPayload, "city")
+		if cityName == "" {
+			if shipAddr, ok := rawPayload["shipping_address"].(map[string]interface{}); ok {
+				cityName = getString(shipAddr, "city")
+			}
+		}
+
 		payload.SourceName = getString(rawPayload, "source_name", "source")
 	}
 
@@ -308,8 +351,12 @@ func ProcessInboundOrder(ctx context.Context, platform string, merchantID string
 
 	// STEP 5: Hash phone number
 	phoneHash := ""
+	phoneHashMeta := ""
 	if payload.PhoneRaw != "" {
 		phoneHash = crypto.HashPhone(payload.PhoneRaw)
+	}
+	if rawPhone != "" {
+		phoneHashMeta = meta.HashPhoneForMeta(rawPhone)
 	}
 
 	// STEP 6: Create BillableEvent in a single INSERT
@@ -325,6 +372,7 @@ func ProcessInboundOrder(ctx context.Context, platform string, merchantID string
 		IsBillable:      isBillable,
 		RawWebhookBody:  payload.RawJSON,
 		PhoneHash:       phoneHash,
+		PhoneHashMeta:   phoneHashMeta,
 		RequiresReview:  checkoutResult.RequiresReview,
 	}
 
@@ -480,6 +528,116 @@ func ProcessInboundOrder(ctx context.Context, platform string, merchantID string
 			"geo_tier", geoTier,
 		)
 	}(event.ID, payload.RawJSON)
+
+	// Spawn a second goroutine for CRM enrichment
+	go func(rawPhoneVal string, eventVal domain.BillableEvent) {
+		var settings domain.MerchantSettings
+		if err := DB.Where("merchant_id = ?", eventVal.MerchantID).First(&settings).Error; err != nil {
+			return
+		}
+
+		if settings.CRMProvider == "" {
+			return
+		}
+
+		connector := crm.GetConnector(settings.CRMProvider,
+			settings.CRMAPIKey,
+			settings.CRMAccountID)
+		if connector == nil {
+			return
+		}
+
+		var profile domain.TrustProfile
+		if err := DB.Where("phone_hash = ?", eventVal.PhoneHash).First(&profile).Error; err != nil {
+			profile = domain.TrustProfile{
+				PhoneHash: eventVal.PhoneHash,
+			}
+		}
+
+		_ = connector.EnrichProfile(context.Background(), rawPhoneVal, profile, eventVal.CategoryL1)
+	}(rawPhone, event)
+
+	// Spawn a third goroutine for Meta CAPI
+	go func(rawPhoneVal string, emailVal string, cityNameVal string, eventVal domain.BillableEvent) {
+		capiCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		var settings domain.MerchantSettings
+		if err := DB.WithContext(capiCtx).
+			Where("merchant_id = ?", eventVal.MerchantID).
+			First(&settings).Error; err != nil {
+			return
+		}
+
+		if !settings.MetaCAPIEnabled ||
+			settings.MetaPixelID == "" ||
+			settings.MetaAccessToken == "" {
+			return
+		}
+
+		var profile domain.TrustProfile
+		if err := DB.WithContext(capiCtx).
+			Where("phone_hash = ?", eventVal.PhoneHash).
+			First(&profile).Error; err != nil {
+			profile = domain.TrustProfile{
+				TotalOrders:   0,
+				IsBlacklisted: false,
+			}
+		}
+
+		// SYNC WITH: internal/service/redis_trust.go EvaluateRisk
+		trustScore := 100.0
+		if profile.TotalOrders > 0 {
+			rtoRate := float64(profile.TotalRTOs) / float64(profile.TotalOrders)
+			cancelRate := float64(profile.TotalCancellations) / float64(profile.TotalOrders)
+			trustScore -= rtoRate * 60
+			trustScore -= cancelRate * 20
+			trustScore += profile.RiskAdjustment
+		} else {
+			trustScore = 85
+		}
+		if profile.IsBlacklisted {
+			trustScore = 5
+		}
+		if trustScore < 0 {
+			trustScore = 0
+		}
+		if trustScore > 100 {
+			trustScore = 100
+		}
+
+		var cred domain.PlatformCredential
+		shopDomain := ""
+		if err := DB.WithContext(capiCtx).
+			Where("merchant_id = ? AND platform = ? AND is_active = true", eventVal.MerchantID, eventVal.Platform).
+			First(&cred).Error; err == nil {
+			shopDomain = cred.ShopDomain
+		}
+
+		eventTimestamp := eventVal.CreatedAt.Unix()
+		if eventVal.CreatedAt.IsZero() {
+			eventTimestamp = time.Now().Unix()
+		}
+
+		capiClient := meta.NewCAPIClient()
+		_ = capiClient.SendPurchaseEvent(capiCtx, meta.CAPIEventInput{
+			MerchantID:      eventVal.MerchantID,
+			PixelID:         settings.MetaPixelID,
+			AccessToken:     settings.MetaAccessToken,
+			TestEventCode:   settings.MetaTestEventCode,
+			OrderID:         eventVal.OrderID,
+			RawPhone:        rawPhoneVal,
+			Email:           emailVal,
+			CityName:        cityNameVal,
+			OrderValuePaise: eventVal.OrderValuePaise,
+			CategoryL1:      eventVal.CategoryL1,
+			EventTimestamp:  eventTimestamp,
+			ShopDomain:      shopDomain,
+			TrustScore:      int(trustScore),
+			TotalOrders:     profile.TotalOrders,
+			IsBlacklisted:   profile.IsBlacklisted,
+		})
+	}(rawPhone, email, cityName, event)
 
 	return nil
 }

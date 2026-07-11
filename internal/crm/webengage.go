@@ -4,6 +4,8 @@ import (
     "context"
     "fmt"
     "time"
+
+    "github.com/arpitmandhotra/api-integrator/internal/domain"
 )
 
 // WebEngageConnector pushes Kotman risk events to WebEngage's REST API.
@@ -90,4 +92,8 @@ func (w *WebEngageConnector) eventName(template string) string {
     default:
         return "Kotman Event"
     }
+}
+
+func (w *WebEngageConnector) EnrichProfile(ctx context.Context, rawPhone string, profile domain.TrustProfile, lastOrderCategory string) error {
+    return nil
 }	
