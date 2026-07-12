@@ -63,9 +63,12 @@ func NewPostgresClient() *gorm.DB {
 	var count int
 	db.Raw("SELECT count(*) FROM pg_constraint WHERE conname = 'check_positive_balance'").Scan(&count)
 	if count == 0 {
-		log.Println("📦 Adding CHECK constraint check_positive_balance to protect ledger integrity...")
-		// Apply it to merchant_settings where the wallet_balance column is actually located in GORM
-		db.Exec("ALTER TABLE merchant_settings ADD CONSTRAINT check_positive_balance CHECK (wallet_balance_paise >= 0)")
+		log.Println("Adding CHECK constraint check_positive_balance to protect ledger integrity...")
+		// M17 FIX: The constraint is the last guard against wallet underflow; a
+		// silent failure here means the DB has no balance protection at all.
+		if err := db.Exec("ALTER TABLE merchant_settings ADD CONSTRAINT check_positive_balance CHECK (wallet_balance_paise >= 0)").Error; err != nil {
+			log.Fatalf("CRITICAL: failed to add check_positive_balance constraint: %v", err)
+		}
 	}
 
 	log.Println("--> Successfully connected to PostgreSQL Cold Storage!")

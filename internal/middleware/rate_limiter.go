@@ -136,7 +136,12 @@ func RequireIPRateLimit(redisClient *redis.Client, limitPerMinute int) fiber.Han
 		).Int64()
 
 		if err != nil {
-			return c.Next() // fail-open on Redis error
+			// M3 FIX: Fail CLOSED, not open. An attacker who can saturate/disconnect
+			// Redis gets a free brute-force window if we fail-open here.
+			slog.Error("ip rate limit redis error \u2014 failing closed", "ip", ip, "error", err)
+			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
+				"error": "Security validation temporarily unavailable",
+			})
 		}
 
 		if int(result) > limitPerMinute {

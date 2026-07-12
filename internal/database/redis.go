@@ -20,7 +20,12 @@ func NewRedisClient() *redis.Client {
 			log.Fatalf("Failed to parse Cloud Redis URL: %v", err)
 		}
 	} else {
-		// Local: Fallback to your exact Docker configuration
+		// M18 FIX: In production, an unset REDIS_URL is a misconfiguration that
+		// would silently connect to an unauthenticated local Redis — fatal instead.
+		if os.Getenv("APP_ENV") == "production" {
+			log.Fatal("CRITICAL: REDIS_URL is not set in production. Refusing to fall back to unauthenticated local Redis.")
+		}
+		// Local dev only: fallback to Docker Redis
 		opt = &redis.Options{
 			Addr:     "127.0.0.1:6379",
 			Password: "",
