@@ -77,6 +77,22 @@ func main() {
 			if lockAcc.IsInvoiced {
 				return fmt.Errorf("accumulator already invoiced")
 			}
+			// Query merchant to check active mode status
+			var merchant domain.Merchant
+			if err := tx.Where("id = ?", acc.MerchantID).First(&merchant).Error; err != nil {
+				return err
+			}
+
+			if !merchant.HasRTOEngine {
+				// If not in active mode (e.g. shadow mode or standalone CRM subscription), do not bill transaction fees.
+				res := tx.Model(&lockAcc).Update("is_invoiced", true)
+				if res.Error != nil {
+					return res.Error
+				}
+				slog.Info("skipped postpaid transaction invoicing for shadow-mode merchant", "merchant_id", acc.MerchantID)
+				return nil
+			}
+
 			// Compute sequence number
 			var count int64
 			err := tx.Model(&domain.MerchantInvoice{}).Where("merchant_id = ?", acc.MerchantID).Count(&count).Error
@@ -92,6 +108,15 @@ func main() {
 			formattedMonth := strings.ReplaceAll(billingMonth, "-", "")
 			invoiceNumber := fmt.Sprintf("KTM-%s-%s-%04d", shortMerchantID, formattedMonth, sequence)
 
+			// Minimum monthly commitment of ₹4,999 (499900 paise) for Active Mode
+			const minCommitmentPaise = 499900
+			finalFeePaise := acc.TotalFeePaise
+			notesStr := fmt.Sprintf("Automatically generated invoice for period %s", billingMonth)
+			if finalFeePaise < minCommitmentPaise {
+				finalFeePaise = minCommitmentPaise
+				notesStr += " (applied minimum monthly commitment of ₹4,999 for active RTO Engine)"
+			}
+
 			// 2.a. Create MerchantInvoice
 			invoice := domain.MerchantInvoice{
 				MerchantID:         acc.MerchantID,
@@ -99,12 +124,12 @@ func main() {
 				BillingPeriodStart: billingPeriodStart,
 				BillingPeriodEnd:   billingPeriodEnd,
 				TotalEventCount:    acc.TotalEvents,
-				TotalFeePaise:      acc.TotalFeePaise,
+				TotalFeePaise:      finalFeePaise,
 				Status:             "pending",
 				SentAt:             nil,
 				PaidAt:             nil,
 				RazorpayOrderID:    "",
-				Notes:              fmt.Sprintf("Automatically generated invoice for period %s", billingMonth),
+				Notes:              notesStr,
 			}
 
 			if err := tx.Create(&invoice).Error; err != nil {
