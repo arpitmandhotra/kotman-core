@@ -90,7 +90,8 @@ func main() {
 		}
 		c.Set("X-Frame-Options", "DENY")
 		c.Set("X-Content-Type-Options", "nosniff")
-		c.Set("X-XSS-Protection", "1; mode=block")
+		// L8 FIX: X-XSS-Protection is deprecated and harmful in legacy IE/Edge;
+		// removed. CSP below provides the real XSS protection.
 		c.Set("Referrer-Policy", "strict-origin-when-cross-origin")
 		c.Set("Strict-Transport-Security", "max-age=63072000; includeSubDomains; preload")
 		c.Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
@@ -141,16 +142,22 @@ func main() {
 	webhookGroup.Post("/shopify/compliance/customers_redact", middleware.RequireShopifyHMAC(shopifySecret), webhookHandler.HandleShopifyCustomersRedact)
 	webhookGroup.Post("/shopify/compliance/shop_redact", middleware.RequireShopifyHMAC(shopifySecret), webhookHandler.HandleShopifyShopRedact)
 
-	// FIX 2: Conditional route registration. 
+	// FIX 2: Conditional route registration.
 	// WooCommerce and Magento endpoints only exist if their secrets are configured.
 	if wooSecret != "" {
 		webhookGroup.Post("/woocommerce", middleware.RequireWooCommerceHMAC(wooSecret), webhookHandler.HandleWooCommerce)
 		slog.Info("WooCommerce webhook route active")
+	} else {
+		// M20 FIX: Warn operators that WooCommerce webhooks will silently 404.
+		slog.Warn("WooCommerce webhook route INACTIVE — WOOCOMMERCE_WEBHOOK_SECRET not set; all WooCommerce orders will be silently dropped")
 	}
 
 	if magentoSecret != "" {
 		webhookGroup.Post("/magento", middleware.RequireMagentoAuth(magentoSecret), webhookHandler.HandleMagento)
 		slog.Info("Magento webhook route active")
+	} else {
+		// M20 FIX: Warn operators that Magento webhooks will silently 404.
+		slog.Warn("Magento webhook route INACTIVE — MAGENTO_WEBHOOK_SECRET not set; all Magento orders will be silently dropped")
 	}
 	// DOOR A: Private Enterprise
 	app.Post("/v1/trust",

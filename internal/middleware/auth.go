@@ -57,7 +57,12 @@ func RequireAPIKey(pg *gorm.DB, redisClient *redis.Client) fiber.Handler {
 				}
 
 				revokeKey := "revoked:merchant:" + merchant.ID
-				revoked, _ := redisClient.Get(c.UserContext(), revokeKey).Result()
+				// M1 FIX: Use a fresh short-lived context for the revocation check,
+				// not the 45ms ctx (which may already be near expiry) and not the
+				// bare c.UserContext() (which has no deadline at all).
+				revokeCtx, revokeCancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+				defer revokeCancel()
+				revoked, _ := redisClient.Get(revokeCtx, revokeKey).Result()
 				if revoked == "1" {
 					slog.Warn("auth blocked: merchant revoked since cache was populated",
 						"merchant_id", merchant.ID, "ip", c.IP())
@@ -100,12 +105,14 @@ func RequireAPIKey(pg *gorm.DB, redisClient *redis.Client) fiber.Handler {
 			})
 		}
 
-		// ==========================================
-		// CACHE POPULATION: Save for next time
-		// ==========================================
+		// M2 FIX: Use a background context for the cache write so it is not
+		// constrained by the 45ms request context, which may already be
+		// exhausted after a slow Postgres lookup.
+		cacheCtx, cacheCancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		defer cacheCancel()
 		merchantJSON, _ := json.Marshal(merchant)
 		// Save to Redis with a 5-Minute Time-To-Live (TTL)
-		redisClient.Set(ctx, cacheKey, merchantJSON, 5*time.Minute)
+		redisClient.Set(cacheCtx, cacheKey, merchantJSON, 5*time.Minute)
 
 		slog.Info("auth granted",
 			"store", merchant.StoreName,

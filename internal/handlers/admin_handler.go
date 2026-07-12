@@ -107,7 +107,6 @@ func (h *AdminHandler) CommitCSV(c *fiber.Ctx) error {
 
 // GetRecentBlocks fetches the latest scammers caught by the Kotman engine
 func (h *AdminHandler) GetRecentBlocks(c *fiber.Ctx) error {
-	merchantName := "Admin"
 	var scammers []domain.TrustProfile
 
 	// Reach into Cold Storage and grab the 50 most recently caught scammers
@@ -119,11 +118,37 @@ func (h *AdminHandler) GetRecentBlocks(c *fiber.Ctx) error {
 		})
 	}
 
+	// H5 FIX: Return a masked view instead of the full TrustProfile struct.
+	// Exposing raw phone_hash in bulk enables hash-oracle attacks — emit only
+	// the operational fields an admin actually needs.
+	type BlockedEntry struct {
+		HashPrefix      string     `json:"hash_prefix"`       // first 4 chars only
+		IsBlacklisted   bool       `json:"is_blacklisted"`
+		BlacklistReason string     `json:"blacklist_reason"`
+		LockedAt        *time.Time `json:"locked_at"`
+		TotalOrders     int        `json:"total_orders"`
+		TotalRTOs       int        `json:"total_rtos"`
+	}
+	result := make([]BlockedEntry, 0, len(scammers))
+	for _, s := range scammers {
+		prefix := "[short]"
+		if len(s.PhoneHash) >= 4 {
+			prefix = s.PhoneHash[:4] + "…"
+		}
+		result = append(result, BlockedEntry{
+			HashPrefix:      prefix,
+			IsBlacklisted:   s.IsBlacklisted,
+			BlacklistReason: s.BlacklistReason,
+			LockedAt:        s.LockedAt,
+			TotalOrders:     s.TotalOrders,
+			TotalRTOs:       s.TotalRTOs,
+		})
+	}
+
 	return c.Status(fiber.StatusOK).JSON(fiber.Map{
 		"success":      true,
-		"merchant":     merchantName,
-		"total_blocks": len(scammers),
-		"data":         scammers,
+		"total_blocks": len(result),
+		"data":         result,
 	})
 }
 
@@ -580,11 +605,17 @@ func (h *AdminHandler) RetriggerAllBackfills(c *fiber.Ctx) error {
 		"merchant_count", len(creds),
 	)
 
-	// Kick off one goroutine per merchant — BackfillOrderHistory enforces its
-	// own concurrency cap (5 slots) so we will not flood the DB.
+	// H4 FIX: Cap goroutine fan-out to prevent connection pool exhaustion.
+	// Without this, 500 merchants = 500 goroutines each holding a Postgres
+	// connection for up to 45 minutes, exhausting the pool (max 25).
+	const maxConcurrentBackfills = 5
+	sem := make(chan struct{}, maxConcurrentBackfills)
+
 	for _, cred := range creds {
 		merchantID := cred.MerchantID
+		sem <- struct{}{} // acquire slot before spawning
 		go func(mID string) {
+			defer func() { <-sem }() // release slot when done
 			ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
 			defer cancel()
 			slog.Info("retrigger_all_backfills: starting backfill for merchant", "merchant_id", mID)
@@ -602,6 +633,6 @@ func (h *AdminHandler) RetriggerAllBackfills(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{
 		"success":         true,
 		"merchants_found": len(creds),
-		"message":         "backfill jobs launched asynchronously — check server logs for per-merchant progress",
+		"message":         "backfill jobs launched asynchronously (max 5 concurrent) — check server logs for per-merchant progress",
 	})
 }

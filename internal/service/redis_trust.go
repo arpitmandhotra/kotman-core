@@ -99,16 +99,27 @@ func (s *RedisTrustService) EvaluateRisk(ctx context.Context, phoneHash string, 
 		}, nil
 	}
 
+	// M12 FIX: Guard all phoneHash[:n] slices against empty/short input.
+	safeHash := func(h string) string {
+		if len(h) >= 4 {
+			return h[:4] + "…"
+		}
+		return "[short]"
+	}
+
 	// 2. CACHE MISS! Enter the Singleflight waiting room.
 	v, err, shared := s.requestGroup.Do(phoneHash, func() (interface{}, error) {
-		slog.Info("cache miss querying postgres", "phone_hash", phoneHash[:8]+"...")
+		slog.Info("cache miss querying postgres", "phone_hash", safeHash(phoneHash))
 
 		var record domain.TrustProfile
 		dbErr := s.pg.Where("phone_hash = ?", phoneHash).First(&record).Error
 
 		if dbErr != nil {
 			// New phone — no history. Default high trust, short cache.
-			s.db.Set(ctx, phoneHash, "85", 15*time.Minute)
+			// M13 FIX: Use context.WithoutCancel so the Redis Set always
+			// completes even if the triggering request was cancelled.
+			cacheCtx := context.WithoutCancel(ctx)
+			s.db.Set(cacheCtx, phoneHash, "85", 15*time.Minute)
 			return 85, nil
 		}
 
@@ -146,25 +157,26 @@ func (s *RedisTrustService) EvaluateRisk(ctx context.Context, phoneHash string, 
 		if finalScore < 30 {
 			cacheTTL = 1 * time.Hour // re-evaluate bad actors more frequently
 		}
-		s.db.Set(ctx, phoneHash, cacheVal, cacheTTL)
+		cacheCtx := context.WithoutCancel(ctx) // M13 FIX: survive request cancellation
+		s.db.Set(cacheCtx, phoneHash, cacheVal, cacheTTL)
 		return finalScore, nil
 	})
 
 	// Handle singleflight errors before touching the result value.
 	if err != nil {
-		slog.Error("singleflight lookup failed", "phone_hash", phoneHash[:8]+"...", "error", err)
+		slog.Error("singleflight lookup failed", "phone_hash", safeHash(phoneHash), "error", err)
 		return domain.TrustResponse{}, err
 	}
 
 	// 4. OBSERVABILITY: Did Singleflight save us from a stampede?
 	if shared {
-		slog.Info("singleflight database protected", "phone_hash", phoneHash[:8]+"...")
+		slog.Info("singleflight database protected", "phone_hash", safeHash(phoneHash))
 	}
 
 	// 5. Build the final response based on what Singleflight returned
 	finalScore, ok := v.(int)
 	if !ok {
-		slog.Error("unexpected type from singleflight result", "phone_hash", phoneHash[:8]+"...")
+		slog.Error("unexpected type from singleflight result", "phone_hash", safeHash(phoneHash))
 		return domain.TrustResponse{}, fmt.Errorf("internal error: singleflight returned non-int type")
 	}
 	action := "ALLOW_COD"
@@ -185,27 +197,46 @@ func (s *RedisTrustService) EvaluateRisk(ctx context.Context, phoneHash string, 
 }
 
 func (s *RedisTrustService) ReportBadActor(ctx context.Context, phoneHash string, reason string) error {
+	safeHash := func(h string) string {
+		if len(h) >= 4 {
+			return h[:4] + "…"
+		}
+		return "[short]"
+	}
+
 	expirationTime := 24 * time.Hour * 180
 	err := s.db.Set(ctx, phoneHash, "20", expirationTime).Err()
 	if err != nil {
-		slog.Error("failed to save bad actor to redis", "error", err, "phone_hash", phoneHash[:8]+"...")
+		slog.Error("failed to save bad actor to redis", "error", err, "phone_hash", safeHash(phoneHash))
 		return err
 	}
-	slog.Info("bad actor saved to redis", "phone_hash", phoneHash[:8]+"...", "reason", reason)
-	// 1. Create the time variable first so we can pass its pointer
-		now := time.Now()
+	slog.Info("bad actor saved to redis", "phone_hash", safeHash(phoneHash), "reason", reason)
 
-		record := domain.TrustProfile{
-			PhoneHash:       phoneHash,
-			IsBlacklisted:   true,     // Explicitly mark as a bad actor
-			BlacklistReason: reason,   // Use the parameter passed into the function
-			LockedAt:        &now,     // Pass the memory address pointer
-		}
-	if err := s.pg.Create(&record).Error; err != nil {
+	now := time.Now()
 
-		slog.Error("failed to archive bad actor in postgres", "error", err, "phone_hash", phoneHash[:8]+"...")
+	// H8 FIX: Use upsert (ON CONFLICT DO UPDATE) instead of Create.
+	// If a TrustProfile for this hash already exists, Create returns a unique-
+	// constraint error, leaving Redis at score=20 but Postgres at is_blacklisted=false
+	// — a split-brain that silently un-blacklists the bad actor on next cache miss.
+	record := domain.TrustProfile{
+		PhoneHash:       phoneHash,
+		IsBlacklisted:   true,
+		BlacklistReason: reason,
+		LockedAt:        &now,
+	}
+	if err := s.pg.WithContext(ctx). // M14 FIX: propagate context
+		Where(domain.TrustProfile{PhoneHash: phoneHash}).
+		Assign(map[string]interface{}{
+			"is_blacklisted":   true,
+			"blacklist_reason": reason,
+			"locked_at":        &now,
+		}).
+		FirstOrCreate(&record).
+		Update("is_blacklisted", true). // ensure existing record is also flipped
+		Error; err != nil {
+		slog.Error("failed to upsert bad actor in postgres", "error", err, "phone_hash", safeHash(phoneHash))
 		return err
 	}
-	slog.Info("bad actor archived in postgres", "phone_hash", phoneHash[:8]+"...")
+	slog.Info("bad actor upserted in postgres", "phone_hash", safeHash(phoneHash))
 	return nil
 }

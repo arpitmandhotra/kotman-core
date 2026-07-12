@@ -10,12 +10,26 @@ import (
 	"os"
 )
 
+// getEncryptionKey decodes a base64-encoded 32-byte AES-256 key from the environment.
+//
+// M19 FIX: The key MUST be a base64-encoded random 32-byte value, not a raw
+// UTF-8 string. ASCII-printable passphrases have < 256-bit entropy (max ~210 bits
+// for a 32-char ASCII string), defeating the security of AES-256.
+//
+// To generate a valid key:  openssl rand -base64 32
 func getEncryptionKey() ([]byte, error) {
 	keyStr := os.Getenv("TOKEN_ENCRYPTION_KEY")
-	if len(keyStr) != 32 {
-		return nil, errors.New("TOKEN_ENCRYPTION_KEY environment variable must be exactly 32 bytes")
+	if keyStr == "" {
+		return nil, errors.New("TOKEN_ENCRYPTION_KEY environment variable is not set")
 	}
-	return []byte(keyStr), nil
+	key, err := base64.StdEncoding.DecodeString(keyStr)
+	if err != nil {
+		return nil, errors.New("TOKEN_ENCRYPTION_KEY must be a valid base64-encoded string (generate with: openssl rand -base64 32)")
+	}
+	if len(key) != 32 {
+		return nil, errors.New("TOKEN_ENCRYPTION_KEY must decode to exactly 32 bytes for AES-256")
+	}
+	return key, nil
 }
 
 // EncryptToken encrypts a plaintext string using AES-256-GCM.

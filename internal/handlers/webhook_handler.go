@@ -67,9 +67,16 @@ func (h *WebhookHandler) resolveMerchantID(c *fiber.Ctx, platform string) string
 
 	cleaned := cleanDomain(shopDomain)
 
+	// H1 FIX: Escape LIKE metacharacters before embedding in pattern.
+	// GORM parameterises the value but does NOT escape % or _ inside the bound parameter,
+	// so a caller-controlled `%` would match any row.
+	escapedForLike := strings.NewReplacer(`%`, `\%`, `_`, `\_`).Replace(cleaned)
+
 	var cred domain.PlatformCredential
-	err := h.pg.Where("platform = ? AND is_active = ? AND (LOWER(shop_domain) = ? OR LOWER(shop_domain) LIKE ?)",
-		platform, true, cleaned, "%"+cleaned+"%").First(&cred).Error
+	err := h.pg.Where(
+		"platform = ? AND is_active = ? AND (LOWER(shop_domain) = ? OR LOWER(shop_domain) LIKE ? ESCAPE '\\\\' )",
+		platform, true, cleaned, "%"+escapedForLike+"%",
+	).First(&cred).Error
 	if err == nil {
 		return cred.MerchantID
 	}
@@ -376,9 +383,18 @@ func (h *WebhookHandler) HandleProductReview(c *fiber.Ctx) error {
 	return c.SendStatus(fiber.StatusOK)
 }
 
+// safeLogHash returns the first 4 hex chars of a hash for logging — short enough
+// that it cannot be used as a brute-force oracle for the full 64-char SHA-256 digest.
+func safeLogHash(h string) string {
+	if len(h) >= 4 {
+		return h[:4] + "…"
+	}
+	return "[short]"
+}
+
 func (h *WebhookHandler) processFeedback(phoneHash, merchantID, orderID, sku, category string, sentiment float64) {
 	now := time.Now()
-	
+
 	// 1. Save the raw feedback record
 	feedback := domain.CustomerFeedback{
 		PhoneHash:  phoneHash,
@@ -406,13 +422,13 @@ func (h *WebhookHandler) processFeedback(phoneHash, merchantID, orderID, sku, ca
 	// 3. Determine the weight
 	weightData, exists := domain.FeedbackWeights[category]
 	if !exists {
-		weightData = domain.FeedbackWeight{BuyerRiskDelta: -1.0, MerchantSignal: false, ProductSignal: false} 
+		weightData = domain.FeedbackWeight{BuyerRiskDelta: -1.0, MerchantSignal: false, ProductSignal: false}
 	}
 
-	// 5. THE FIX: Execute an atomic, targeted update to prevent race conditions
+	// 4. Atomic update — prevents race conditions on concurrent feedback
 	updatePayload := map[string]interface{}{
-		"complaint_count":   gorm.Expr("complaint_count + 1"),
-		"risk_adjustment":   gorm.Expr("risk_adjustment + ?", weightData.BuyerRiskDelta),
+		"complaint_count": gorm.Expr("complaint_count + 1"),
+		"risk_adjustment": gorm.Expr("risk_adjustment + ?", weightData.BuyerRiskDelta),
 		"complaint_score": gorm.Expr(
 			"(complaint_score * complaint_count + ?) / (complaint_count + 1)",
 			sentiment,
@@ -427,13 +443,13 @@ func (h *WebhookHandler) processFeedback(phoneHash, merchantID, orderID, sku, ca
 	}
 	if result.RowsAffected == 0 {
 		slog.Error("feedback profile update affected zero rows — risk adjustment lost",
-			"hash", phoneHash[:8],
+			"hash", safeLogHash(phoneHash),
 			"profile_id", profile.ID,
 		)
 		return
 	}
 
-	slog.Info("successfully processed intent-weighted customer feedback event", "hash", phoneHash[:8], "delta", weightData.BuyerRiskDelta)
+	slog.Info("processed intent-weighted customer feedback", "hash", safeLogHash(phoneHash), "delta", weightData.BuyerRiskDelta)
 }
 
 // ==========================================
@@ -506,7 +522,7 @@ func (h *WebhookHandler) HandleShopifyCustomersDataRequest(c *fiber.Ctx) error {
 
 func (h *WebhookHandler) HandleShopifyCustomersRedact(c *fiber.Ctx) error {
 	var payload struct {
-		ShopDomain string   `json:"shop_domain"`
+		ShopDomain string `json:"shop_domain"`
 		Customer   struct {
 			Phone string `json:"phone"`
 		} `json:"customer"`
@@ -518,17 +534,32 @@ func (h *WebhookHandler) HandleShopifyCustomersRedact(c *fiber.Ctx) error {
 		return c.SendStatus(fiber.StatusOK)
 	}
 	phoneHash := crypto.HashPhone(payload.Customer.Phone)
-	go func() {
-		h.pg.Model(&domain.BillableEvent{}).
-			Where("phone_hash = ?", phoneHash).
-			Update("raw_webhook_body", "[REDACTED-GDPR-CUSTOMER]")
 
-		h.pg.Model(&domain.OrderAudit{}).
-			Where("merchant_id = ? AND raw_payload::text LIKE ?", 
-				h.resolveMerchantID(c, "shopify"), 
-				"%"+phoneHash+"%").
-			Update("raw_payload", `{"redacted": "GDPR-customer-request"}`)
-	}()
+	// C1 FIX: Resolve merchantID BEFORE spawning the goroutine.
+	// Fiber recycles c after the handler returns — any access to c inside a
+	// goroutine is a use-after-free / data race.
+	merchantID := h.resolveMerchantID(c, "shopify")
+
+	go func(hash, mID string) {
+		// H2 FIX: Log DB errors so GDPR erasure failures are visible.
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		if r := h.pg.WithContext(ctx).Model(&domain.BillableEvent{}).
+			Where("phone_hash = ?", hash).
+			Update("raw_webhook_body", "[REDACTED-GDPR-CUSTOMER]"); r.Error != nil {
+			slog.Error("GDPR customer redact: failed to redact billable_events", "error", r.Error)
+		}
+
+		if mID != "" {
+			if r := h.pg.WithContext(ctx).Model(&domain.OrderAudit{}).
+				Where("merchant_id = ? AND raw_payload::text LIKE ?", mID, "%"+hash+"%").
+				Update("raw_payload", `{"redacted": "GDPR-customer-request"}`); r.Error != nil {
+				slog.Error("GDPR customer redact: failed to redact order_audits", "error", r.Error)
+			}
+		}
+	}(phoneHash, merchantID)
+
 	return c.SendStatus(fiber.StatusOK)
 }
 
@@ -606,7 +637,8 @@ func (h *WebhookHandler) HandleShopifyOrderCreation(c *fiber.Ctx) error {
 
 	var merchant domain.Merchant
 	if err := h.pg.WithContext(c.UserContext()).Where("api_key_hash = ?", hashedKey).First(&merchant).Error; err != nil {
-		slog.Warn("unauthorized webhook request: invalid api key hash", "hash", hashedKey)
+		// C2 FIX: Never log the full hash — even a hash prefix reduces brute-force search space.
+		slog.Warn("unauthorized webhook request: invalid api key", "ip", c.IP())
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
 			"success": false,
 			"error":   "Unauthorized: invalid API key",

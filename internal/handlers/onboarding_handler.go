@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"log/slog"
+	"os"
 	"time"
 
 	"github.com/arpitmandhotra/api-integrator/internal/crypto"
@@ -79,9 +80,15 @@ func (h *OnboardingHandler) RegisterMerchant(c *fiber.Ctx) error {
 		})
 	}
 
+	// M21 FIX: Read base URL from env so merchants don't get a hardcoded
+	// placeholder that points to an unclaimed domain.
+	apiBase := os.Getenv("KOTMAN_API_BASE_URL")
+	if apiBase == "" {
+		apiBase = "https://api.yourdomain.com" // only reached in local dev
+	}
 	response := RegisterResponse{
 		APIKey:     apiKey,
-		WebhookURL: "https://api.yourdomain.com/v1/webhooks/shadow",
+		WebhookURL: apiBase + "/v1/webhooks/shadow",
 	}
 
 	return c.Status(fiber.StatusCreated).JSON(response)
