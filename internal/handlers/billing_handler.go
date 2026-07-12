@@ -118,8 +118,8 @@ func (h *BillingHandler) PurchaseModule(c *fiber.Ctx) error {
 		})
 	}
 
-	// One-time payment of ₹5,000 for flat-fee modules
-	const modulePriceINR = 5000
+	// Upfront subscription payment of ₹4,999/month for flat-fee modules
+	const modulePriceINR = 4999
 	amountPaise := int64(modulePriceINR * 100)
 
 	keyID := os.Getenv("RAZORPAY_KEY_ID")
@@ -186,18 +186,20 @@ func (h *BillingHandler) VerifyModulePurchase(c *fiber.Ctx) error {
 		return c.Status(404).JSON(fiber.Map{"success": false, "error": "merchant not found"})
 	}
 
-	// Activate the module in a Postgres transaction (One-time lifetime purchase, no renews-at date needed)
+	// Activate the module in a Postgres transaction (Upfront subscription payment)
 	now := time.Now()
+	renewsAt := now.AddDate(0, 1, 0) // monthly renewal date
+
 	err = h.pg.WithContext(c.UserContext()).Transaction(func(tx *gorm.DB) error {
 		// Upsert MerchantSubscription row
 		sub := domain.MerchantSubscription{
 			MerchantID:          merchantID,
 			Module:              moduleName,
 			Status:              "active",
-			PriceINR:            5000,
+			PriceINR:            4999,
 			RazorpayOrderID:     req.OrderID,
 			CurrentPeriodStart:  &now,
-			CurrentPeriodEnd:    nil, // one-time payment, no end date
+			CurrentPeriodEnd:    &renewsAt,
 		}
 		if err := tx.Where("merchant_id = ? AND module = ?", merchantID, moduleName).
 			Assign(sub).FirstOrCreate(&sub).Error; err != nil {
@@ -209,10 +211,10 @@ func (h *BillingHandler) VerifyModulePurchase(c *fiber.Ctx) error {
 		switch moduleName {
 		case domain.ModuleCrossNetwork:
 			updates["has_cross_network_intel"] = true
-			updates["cross_network_renews_at"]  = nil
+			updates["cross_network_renews_at"]  = renewsAt
 		case domain.ModuleCRMUpsell:
 			updates["has_crm_upsell_engine"] = true
-			updates["crm_upsell_renews_at"]   = nil
+			updates["crm_upsell_renews_at"]   = renewsAt
 		default:
 			return fmt.Errorf("unknown module: %s", moduleName)
 		}
