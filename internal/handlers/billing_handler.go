@@ -3,8 +3,12 @@ package handlers
 import (
 	"fmt"
 	"log/slog"
+	"os"
+	"strconv"
+	"strings"
 	"time"
 
+	"github.com/arpitmandhotra/api-integrator/internal/billing"
 	"github.com/arpitmandhotra/api-integrator/internal/domain"
 	"github.com/gofiber/fiber/v2"
 	"github.com/redis/go-redis/v9"
@@ -114,59 +118,120 @@ func (h *BillingHandler) PurchaseModule(c *fiber.Ctx) error {
 		})
 	}
 
-	now := time.Now()
-	renewsAt := now.AddDate(0, 1, 0) // 1 month from now
+	// One-time payment of ₹5,000 for flat-fee modules
+	const modulePriceINR = 5000
+	amountPaise := int64(modulePriceINR * 100)
 
-	err := h.pg.WithContext(c.UserContext()).Transaction(func(tx *gorm.DB) error {
+	keyID := os.Getenv("RAZORPAY_KEY_ID")
+	keySecret := os.Getenv("RAZORPAY_KEY_SECRET")
+	if keyID == "" || keySecret == "" {
+		return c.Status(500).JSON(fiber.Map{"success": false, "error": "billing unavailable"})
+	}
+
+	orderID, err := billing.CreateRazorpayOrder(amountPaise, keyID, keySecret)
+	if err != nil {
+		slog.Error("failed to create Razorpay order for module", "module", req.Module, "error", err)
+		return c.Status(500).JSON(fiber.Map{"success": false, "error": "failed to create payment order"})
+	}
+
+	// Store the (module, amount) in Redis keyed on Razorpay order ID for the verify step
+	cacheKey := "module_purchase:" + orderID
+	cacheVal := req.Module + ":" + strconv.Itoa(modulePriceINR)
+	h.rdb.Set(c.UserContext(), cacheKey, cacheVal, 30*time.Minute)
+
+	return c.Status(201).JSON(fiber.Map{
+		"success":           true,
+		"razorpay_order_id": orderID,
+		"module":            req.Module,
+		"amount_inr":        modulePriceINR,
+	})
+}
+
+// VerifyModulePurchase validates payment and activates the purchased module.
+// Route: POST /v1/billing/module/verify
+// Body: { "razorpay_order_id", "razorpay_payment_id", "razorpay_signature" }
+func (h *BillingHandler) VerifyModulePurchase(c *fiber.Ctx) error {
+	merchantIDVal := c.Locals("kaughtman.merchant_id")
+	merchantID, ok := merchantIDVal.(string)
+	if !ok || merchantID == "" {
+		return c.Status(401).JSON(fiber.Map{"success": false, "error": "unauthorized"})
+	}
+
+	var req VerifyRequest // reuse existing struct
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(400).JSON(fiber.Map{"success": false, "error": "invalid body"})
+	}
+
+	keySecret := os.Getenv("RAZORPAY_KEY_SECRET")
+	if !billing.VerifyRazorpaySignature(req.OrderID, req.PaymentID, req.Signature, keySecret) {
+		return c.Status(401).JSON(fiber.Map{"success": false, "error": "signature verification failed"})
+	}
+
+	// Retrieve module from Redis cache
+	cacheKey := "module_purchase:" + req.OrderID
+	cacheVal, err := h.rdb.Get(c.UserContext(), cacheKey).Result()
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"success": false, "error": "payment session expired or not found"})
+	}
+
+	parts := strings.SplitN(cacheVal, ":", 2)
+	if len(parts) != 2 {
+		return c.Status(500).JSON(fiber.Map{"success": false, "error": "invalid session data"})
+	}
+	moduleName := parts[0]
+
+	// Fetch current merchant state for idempotency check
+	var merchant domain.Merchant
+	if err := h.pg.WithContext(c.UserContext()).Where("id = ?", merchantID).First(&merchant).Error; err != nil {
+		return c.Status(404).JSON(fiber.Map{"success": false, "error": "merchant not found"})
+	}
+
+	// Activate the module in a Postgres transaction (One-time lifetime purchase, no renews-at date needed)
+	now := time.Now()
+	err = h.pg.WithContext(c.UserContext()).Transaction(func(tx *gorm.DB) error {
 		// Upsert MerchantSubscription row
 		sub := domain.MerchantSubscription{
 			MerchantID:          merchantID,
-			Module:              req.Module,
+			Module:              moduleName,
 			Status:              "active",
-			PriceINR:            4999,
-			RazorpayOrderID:     "postpaid_direct",
+			PriceINR:            5000,
+			RazorpayOrderID:     req.OrderID,
 			CurrentPeriodStart:  &now,
-			CurrentPeriodEnd:    &renewsAt,
+			CurrentPeriodEnd:    nil, // one-time payment, no end date
 		}
-		if err := tx.Where("merchant_id = ? AND module = ?", merchantID, req.Module).
+		if err := tx.Where("merchant_id = ? AND module = ?", merchantID, moduleName).
 			Assign(sub).FirstOrCreate(&sub).Error; err != nil {
 			return err
 		}
 
 		// Flip the corresponding bool on Merchant
 		updates := map[string]interface{}{}
-		switch req.Module {
+		switch moduleName {
 		case domain.ModuleCrossNetwork:
 			updates["has_cross_network_intel"] = true
-			updates["cross_network_renews_at"]  = renewsAt
+			updates["cross_network_renews_at"]  = nil
 		case domain.ModuleCRMUpsell:
 			updates["has_crm_upsell_engine"] = true
-			updates["crm_upsell_renews_at"]   = renewsAt
+			updates["crm_upsell_renews_at"]   = nil
 		default:
-			return fmt.Errorf("unknown module: %s", req.Module)
+			return fmt.Errorf("unknown module: %s", moduleName)
 		}
 		return tx.Model(&domain.Merchant{}).Where("id = ?", merchantID).Updates(updates).Error
 	})
 
 	if err != nil {
-		slog.Error("failed to activate module postpaid", "module", req.Module, "merchant_id", merchantID, "error", err)
+		slog.Error("failed to activate module", "module", moduleName, "merchant_id", merchantID, "error", err)
 		return c.Status(500).JSON(fiber.Map{"success": false, "error": "failed to activate module"})
 	}
 
-	slog.Info("module activated postpaid", "module", req.Module, "merchant_id", merchantID, "renews_at", renewsAt)
+	// Clean up Redis cache key
+	h.rdb.Del(c.UserContext(), cacheKey)
+
+	slog.Info("module purchased and activated in real time", "module", moduleName, "merchant_id", merchantID)
 	
 	return c.JSON(fiber.Map{
-		"success":   true,
-		"module":    req.Module,
-		"renews_at": renewsAt,
-		"message":   "Module activated successfully under postpaid billing",
-	})
-}
-
-// VerifyModulePurchase is deprecated under postpaid billing.
-func (h *BillingHandler) VerifyModulePurchase(c *fiber.Ctx) error {
-	return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-		"success": false,
-		"error":   "Module verification is deprecated under postpaid billing.",
+		"success": true,
+		"module":  moduleName,
+		"message": "Module purchased and activated successfully",
 	})
 }
