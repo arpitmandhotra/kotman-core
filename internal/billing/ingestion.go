@@ -412,26 +412,8 @@ func ProcessInboundOrder(ctx context.Context, platform string, merchantID string
 			return fmt.Errorf("billing accumulator update affected 0 rows (race condition check)")
 		}
 
-		// Perform prepaid wallet balance deduction using integer paise.
-		// For Postgres, we rely on the check_positive_balance constraint. For SQLite, we query with threshold.
-		deductQuery := DB.WithContext(ctx).Model(&domain.MerchantSettings{}).Where("merchant_id = ?", merchantID)
-		if DB.Dialector.Name() != "postgres" {
-			deductQuery = deductQuery.Where("wallet_balance_paise >= ?", feePaise)
-		}
-
-		deductRes := deductQuery.Update("wallet_balance_paise", gorm.Expr("wallet_balance_paise - ?", feePaise))
-		if deductRes.Error != nil {
-			var pgErr *pgconn.PgError
-			if errors.As(deductRes.Error, &pgErr) && pgErr.Code == "23514" {
-				slog.Error("ledger integrity check failed: insufficient merchant wallet balance (CHECK constraint check_positive_balance violated)", "merchant_id", merchantID, "fee", float64(feePaise)/100.0)
-				// Gracefully skip deduction but return nil to complete webhook processing successfully
-			} else {
-				return fmt.Errorf("failed to deduct prepaid fee from wallet: %w", deductRes.Error)
-			}
-		} else if deductRes.RowsAffected == 0 {
-			slog.Warn("insufficient wallet balance (skipped deduction during ingestion)", "merchant_id", merchantID, "fee", float64(feePaise)/100.0)
-			// Continue webhook processing normally
-		}
+		// Prepaid wallet balance deduction was removed in postpaid billing migration.
+		// Fees are accumulated in MerchantBillingAccumulator and invoiced postpaid at the end of the month.
 	}
 
 	slog.Info("billable event recorded",
@@ -727,15 +709,7 @@ func ProcessOrderCreditBack(ctx context.Context, platform, merchantID, orderID s
 			}
 		}
 
-		// Refund the equivalent paise amount to the merchant's wallet
-		refundRes := tx.Model(&domain.MerchantSettings{}).
-			Where("merchant_id = ?", merchantID).
-			Update("wallet_balance_paise", gorm.Expr("wallet_balance_paise + ?", waivedFeePaise))
-		if refundRes.Error != nil {
-			return fmt.Errorf("failed to credit back wallet balance: %w", refundRes.Error)
-		}
-
-		slog.Info("successfully processed cancellation/RTO credit back",
+		slog.Info("successfully processed cancellation/RTO credit back postpaid (accumulator decremented)",
 			"merchant_id", merchantID,
 			"order_id", orderID,
 			"credited_amount_rupees", float64(waivedFeePaise)/100.0,

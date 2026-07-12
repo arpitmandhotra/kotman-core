@@ -92,19 +92,37 @@ func main() {
 			formattedMonth := strings.ReplaceAll(billingMonth, "-", "")
 			invoiceNumber := fmt.Sprintf("KTM-%s-%s-%04d", shortMerchantID, formattedMonth, sequence)
 
+			// Find all active subscriptions for this merchant during this period
+			var subscriptions []domain.MerchantSubscription
+			if err := tx.Where("merchant_id = ? AND status = ?", acc.MerchantID, "active").Find(&subscriptions).Error; err != nil {
+				return err
+			}
+			
+			subFeePaise := 0
+			var subNotes []string
+			for _, sub := range subscriptions {
+				subFeePaise += sub.PriceINR * 100
+				subNotes = append(subNotes, sub.Module)
+			}
+
 			// 2.a. Create MerchantInvoice
+			notesStr := fmt.Sprintf("Automatically generated invoice for period %s", billingMonth)
+			if len(subNotes) > 0 {
+				notesStr += fmt.Sprintf(" (includes active subscriptions: %s)", strings.Join(subNotes, ", "))
+			}
+
 			invoice := domain.MerchantInvoice{
 				MerchantID:         acc.MerchantID,
 				InvoiceNumber:      invoiceNumber,
 				BillingPeriodStart: billingPeriodStart,
 				BillingPeriodEnd:   billingPeriodEnd,
 				TotalEventCount:    acc.TotalEvents,
-				TotalFeePaise:      acc.TotalFeePaise,
+				TotalFeePaise:      acc.TotalFeePaise + subFeePaise,
 				Status:             "pending",
 				SentAt:             nil,
 				PaidAt:             nil,
 				RazorpayOrderID:    "",
-				Notes:              fmt.Sprintf("Automatically generated invoice for period %s", billingMonth),
+				Notes:              notesStr,
 			}
 
 			if err := tx.Create(&invoice).Error; err != nil {
@@ -134,7 +152,7 @@ func main() {
 			}
 
 			invoicesCreated++
-			totalAmountBilled += acc.TotalFeePaise
+			totalAmountBilled += invoice.TotalFeePaise
 			return nil
 		})
 

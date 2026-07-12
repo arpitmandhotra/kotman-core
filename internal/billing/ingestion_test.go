@@ -187,23 +187,10 @@ func TestProcessOrderCreditBack(t *testing.T) {
 		t.Fatalf("ProcessInboundOrder failed: %v", err)
 	}
 
-	// Verify balance was deducted (100.0 - 5.0 = 95.0)
-	var settings TestMerchantSettings
-	db.Where("merchant_id = ?", merchantID).First(&settings)
-	if settings.WalletBalancePaise != 9500 {
-		t.Errorf("expected wallet balance to be 9500 after charge, got %d", settings.WalletBalancePaise)
-	}
-
 	// 2. Process credit back (RTO/Cancellation)
 	err = ProcessOrderCreditBack(ctx, "shopify", merchantID, "998877")
 	if err != nil {
 		t.Fatalf("ProcessOrderCreditBack failed: %v", err)
-	}
-
-	// Verify balance was refunded (95.0 + 5.0 = 100.0)
-	db.Where("merchant_id = ?", merchantID).First(&settings)
-	if settings.WalletBalancePaise != 10000 {
-		t.Errorf("expected wallet balance to be restored to 10000 after credit back, got %d", settings.WalletBalancePaise)
 	}
 
 	// Verify BillableEvent is marked as not billable and has fee = 0

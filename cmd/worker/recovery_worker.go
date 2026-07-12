@@ -355,37 +355,36 @@ func (w *RecoveryWorker) executeRouting(
 		slog.Error("Tier 2 WhatsApp send failed — falling through to Tier 3", "error", err)
 	}
 
-	// TIER 3: Kaughtman managed wallet
+	// TIER 3: Kaughtman managed postpaid messaging
 	const messageCostPaise = 100
-	if settings.WalletBalancePaise >= messageCostPaise {
-		slog.Info("routing via Kaughtman managed wallet", "merchant_id", settings.MerchantID)
+	slog.Info("routing via Kaughtman managed postpaid messaging", "merchant_id", settings.MerchantID)
 
-		masterKey := os.Getenv("KAUGHTMAN_MASTER_TWILIO_KEY")
-		if masterKey == "" {
-			slog.Error("KAUGHTMAN_MASTER_TWILIO_KEY not set — cannot send managed message")
-			return
-		}
-
-		// Atomic wallet deduction — only deducts if balance is still sufficient.
-		// RowsAffected == 0 means another goroutine already spent the balance.
-		result := w.pg.Model(settings).
-			Where("wallet_balance_paise >= ?", messageCostPaise).
-			Update("wallet_balance_paise", gorm.Expr("wallet_balance_paise - ?", messageCostPaise))
-
-		if result.Error != nil || result.RowsAffected == 0 {
-			slog.Warn("wallet deduction failed or insufficient balance",
-				"merchant_id", settings.MerchantID,
-			)
-			return
-		}
-
-		err := w.sendWhatsApp(ctx, rawPhone, phoneHash, event.Template, event.DiscountValue,
-			masterKey, "twilio", merchant.StoreName, orderValue)
-		if err != nil {
-			slog.Error("Tier 3 WhatsApp send failed", "error", err)
-		}
+	masterKey := os.Getenv("KAUGHTMAN_MASTER_TWILIO_KEY")
+	if masterKey == "" {
+		slog.Error("KAUGHTMAN_MASTER_TWILIO_KEY not set — cannot send managed message")
 		return
 	}
+
+	err := w.sendWhatsApp(ctx, rawPhone, phoneHash, event.Template, event.DiscountValue,
+		masterKey, "twilio", merchant.StoreName, orderValue)
+	if err == nil {
+		// Increment the billing accumulator for the current month postpaid
+		month := time.Now().Format("2006-01")
+		var accumulator domain.MerchantBillingAccumulator
+		_ = w.pg.Where("merchant_id = ? AND billing_month = ?", settings.MerchantID, month).
+			FirstOrCreate(&accumulator, domain.MerchantBillingAccumulator{
+				MerchantID:   settings.MerchantID,
+				BillingMonth: month,
+			}).Error
+
+		w.pg.Model(&domain.MerchantBillingAccumulator{}).
+			Where("merchant_id = ? AND billing_month = ?", settings.MerchantID, month).
+			Updates(map[string]interface{}{
+				"total_fee_paise": gorm.Expr("total_fee_paise + ?", messageCostPaise),
+			})
+		return
+	}
+	slog.Error("Tier 3 WhatsApp send failed", "error", err)
 
 	slog.Warn("all routing tiers exhausted — message dropped",
 		"merchant_id", settings.MerchantID,
