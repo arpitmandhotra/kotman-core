@@ -169,7 +169,7 @@ func (h *AnalyticsHandler) GetMerchantInsights(c *fiber.Ctx) error {
 		SimulatedSavingsRangeMax: simSavingsMax,
 		HasRTOEngine:             merchant.HasRTOEngine,
 		HasCrossNetworkIntel:     hasCrossNetwork,
-		HasCRMUpsellEngine:       merchant.HasCRMUpsellEngine,
+		HasCRMUpsellEngine:       merchant.CRMUpsellActive(),
 		OwnStore:                 ownStore,
 		CrossNetwork:             crossNetwork,
 		CrossNetworkPaywalled:    crossNetworkPaywalled,

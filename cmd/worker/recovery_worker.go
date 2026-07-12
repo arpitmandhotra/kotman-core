@@ -301,8 +301,9 @@ func (w *RecoveryWorker) executeRouting(
 	orderValue string,
 ) {
 	// TIER 1: CRM connector
-	// CORRECT: CRM push requires MODULE 3 (HasCRMUpsellEngine)
-	if merchant.HasCRMUpsellEngine && settings.CRMProvider != "" && settings.CRMAPIKey != "" {
+	// TIER 1: CRM connector
+	// CORRECT: CRM push requires CRM Upsell Engine or RTO Engine (bundled)
+	if merchant.CRMUpsellActive() && settings.CRMProvider != "" && settings.CRMAPIKey != "" {
 		connector, err := crm.NewConnector(
 			settings.CRMProvider,
 			settings.CRMAPIKey,
@@ -331,8 +332,8 @@ func (w *RecoveryWorker) executeRouting(
 				return // CRM handled it — stop here
 			}
 		}
-	} else if settings.CRMProvider != "" && !merchant.HasCRMUpsellEngine {
-		// Merchant has CRM configured but hasn't purchased MODULE 3.
+	} else if settings.CRMProvider != "" && !merchant.CRMUpsellActive() {
+		// Merchant has CRM configured but hasn't purchased/activated CRM Upsell module.
 		// Log this as a debug event — useful for sales follow-up on upgrade.
 		slog.Debug("CRM push skipped — merchant has not purchased CRM Upsell Engine module",
 			"merchant_id", merchant.ID,
@@ -355,9 +356,9 @@ func (w *RecoveryWorker) executeRouting(
 		slog.Error("Tier 2 WhatsApp send failed — falling through to Tier 3", "error", err)
 	}
 
-	// TIER 3: Kaughtman managed messaging (Included in CRM Upsell subscription)
-	if !merchant.HasCRMUpsellEngine {
-		slog.Warn("Tier 3 direct messaging skipped — merchant does not have CRM Upsell subscription", "merchant_id", merchant.ID)
+	// TIER 3: Kaughtman managed messaging (Included in CRM Upsell / RTO Engine subscription)
+	if !merchant.CRMUpsellActive() {
+		slog.Warn("Tier 3 direct messaging skipped — merchant does not have CRM Upsell / RTO Engine subscription", "merchant_id", merchant.ID)
 		return
 	}
 

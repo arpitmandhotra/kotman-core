@@ -53,6 +53,12 @@ func (m *Merchant) CrossNetworkActive() bool {
 	return m.HasCrossNetworkIntel || m.HasRTOEngine
 }
 
+// CRMUpsellActive returns true if the merchant has access to the CRM Upsell/Recovery module,
+// either via standalone purchase or because they have the RTO engine (bundled).
+func (m *Merchant) CRMUpsellActive() bool {
+	return m.HasCRMUpsellEngine || m.HasRTOEngine
+}
+
 // InActiveMode returns true if this merchant should have live RTO enforcement running.
 // This is the single source of truth for execution mode decisions across the codebase.
 // It does NOT depend on ShadowModeEndsAt — that field is only for UI countdown display.
@@ -111,7 +117,7 @@ type MerchantSettings struct {
     MetaAccessToken    string `gorm:"default:''"`  // System User access token
     MetaAdAccountID   string `gorm:"default:''"`  // e.g. "act_1234567890"
     MetaTestEventCode string `gorm:"default:''"`  // only set in staging/dev
-    MetaCAPIEnabled   bool   `gorm:"default:false"` // master on/off switch
+    MetaCAPIEnabled   bool   `gorm:"column:meta_capi_enabled;default:false"` // master on/off switch
 
     CreatedAt time.Time
     UpdatedAt time.Time

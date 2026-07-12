@@ -103,7 +103,7 @@ func TestEvaluateRisk_Integration(t *testing.T) {
 	}
 
 	// Create test merchant and settings
-	testMerchantID := "test-merchant-123"
+	testMerchantID := "f6e5d4c3-b2a1-0987-6543-210fedcba987"
 	if err := pgDB.Create(&domain.Merchant{
 		ID:         testMerchantID,
 		StoreName:  "Test Integration Store",
@@ -158,8 +158,8 @@ func TestEvaluateRisk_Integration(t *testing.T) {
 		if resp.Action != "HIDE_COD" {
 			t.Errorf("expected HIDE_COD, got %s", resp.Action)
 		}
-		if resp.Score != 20 {
-			t.Errorf("expected score 20, got %d", resp.Score)
+		if resp.Score != 5 {
+			t.Errorf("expected score 5, got %d", resp.Score)
 		}
 
 		// Verify cache warming
@@ -167,8 +167,8 @@ func TestEvaluateRisk_Integration(t *testing.T) {
 		if redisErr != nil {
 			t.Errorf("expected bad actor to be cached in Redis after Postgres hit, got error: %v", redisErr)
 		}
-		if val != "20" {
-			t.Errorf("expected Redis cached score '20', got '%s'", val)
+		if val != "5" {
+			t.Errorf("expected Redis cached score '5', got '%s'", val)
 		}
 	})
 

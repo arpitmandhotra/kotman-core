@@ -66,7 +66,7 @@ func TestRunAudienceSync_Integration(t *testing.T) {
         t.Fatalf("failed to migrate database schema: %v", err)
     }
 
-    merchantID := "test-meta-merchant"
+    merchantID := "a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d"
     if err := pgDB.Create(&domain.Merchant{
         ID:         merchantID,
         StoreName:  "Test Meta Store",
