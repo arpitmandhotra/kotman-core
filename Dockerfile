@@ -32,17 +32,17 @@ FROM alpine:latest AS api
 RUN apk add --no-cache tzdata
 
 # Create a non-root user with a fixed UID/GID for security hardening
-RUN addgroup -g 1001 -S kotman && \
-    adduser -u 1001 -S kotman -G kotman
+RUN addgroup -g 1001 -S kaughtman && \
+    adduser -u 1001 -S kaughtman -G kaughtman
 
-# Use /app as the working directory (owned by root, write-protected for kotman user)
+# Use /app as the working directory (owned by root, write-protected for kaughtman user)
 WORKDIR /app
 
 # Copy the statically linked binary
 COPY --from=api-builder /app/api-server /app/api-server
 
 # Drop root privileges
-USER kotman
+USER kaughtman
 
 EXPOSE 8080
 
@@ -56,16 +56,16 @@ FROM alpine:latest AS worker
 RUN apk add --no-cache tzdata
 
 # Create a non-root user with a fixed UID/GID for security hardening
-RUN addgroup -g 1001 -S kotman && \
-    adduser -u 1001 -S kotman -G kotman
+RUN addgroup -g 1001 -S kaughtman && \
+    adduser -u 1001 -S kaughtman -G kaughtman
 
-# Use /app as the working directory (owned by root, write-protected for kotman user)
+# Use /app as the working directory (owned by root, write-protected for kaughtman user)
 WORKDIR /app
 
 # Copy the statically linked binary
 COPY --from=worker-builder /app/bg-worker /app/bg-worker
 
 # Drop root privileges
-USER kotman
+USER kaughtman
 
 CMD ["/app/bg-worker"]

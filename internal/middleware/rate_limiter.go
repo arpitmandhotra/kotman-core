@@ -14,7 +14,7 @@ import (
 
 func RequireRateLimit(redisClient *redis.Client) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		merchant, ok := c.Locals("kotman.merchant").(domain.Merchant)
+		merchant, ok := c.Locals("kaughtman.merchant").(domain.Merchant)
 		if !ok {
 			return c.Next() // Fail-open
 		}

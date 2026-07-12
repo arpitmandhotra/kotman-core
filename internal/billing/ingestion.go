@@ -660,14 +660,14 @@ func parseLineItemPrice(raw interface{}) (float64, error) {
 func ComputeFee(checkoutMode, paymentMethod string, orderValuePaise int) (bool, int) {
 	switch checkoutMode {
 	case "native":
-		return true, domain.KotmanFee(orderValuePaise)
+		return true, domain.KaughtmanFee(orderValuePaise)
 	case "third_party":
 		if paymentMethod == "cod" {
-			return true, domain.KotmanFee(orderValuePaise)
+			return true, domain.KaughtmanFee(orderValuePaise)
 		}
 		return false, 0
 	default:
-		return true, domain.KotmanFee(orderValuePaise)
+		return true, domain.KaughtmanFee(orderValuePaise)
 	}
 }
 

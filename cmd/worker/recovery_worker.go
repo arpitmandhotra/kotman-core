@@ -30,7 +30,7 @@ type RecoveryWorker struct {
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
-	slog.Info("Starting Kotman Recovery Worker with CRM routing...")
+	slog.Info("Starting Kaughtman Recovery Worker with CRM routing...")
 
 	redisClient := database.NewRedisClient()
 	postgresClient := database.NewPostgresClient()
@@ -195,7 +195,7 @@ func (w *RecoveryWorker) processCartRecovery(ctx context.Context, merchantID, ph
 		}
 	}
 
-	event := crm.KotmanRiskEvent{
+	event := crm.KaughtmanRiskEvent{
 		PhoneHash:  phoneHash,
 		MerchantID: merchantID,
 		Template:   template,
@@ -263,7 +263,7 @@ func (w *RecoveryWorker) processPostPurchaseFeedback(ctx context.Context, mercha
 		}
 	}
 
-	event := crm.KotmanRiskEvent{
+	event := crm.KaughtmanRiskEvent{
 		PhoneHash:     phoneHash,
 		MerchantID:    merchantID,
 		Template:      template,
@@ -289,7 +289,7 @@ func (w *RecoveryWorker) processPostPurchaseFeedback(ctx context.Context, mercha
 //
 //	Tier 1 — CRM connector (Klaviyo / HubSpot / MoEngage / WebEngage)
 //	Tier 2 — Merchant's own Twilio/Interakt key
-//	Tier 3 — Kotman managed wallet (Twilio master key)
+//	Tier 3 — Kaughtman managed wallet (Twilio master key)
 //
 // Each tier falls through to the next on failure.
 func (w *RecoveryWorker) executeRouting(
@@ -297,7 +297,7 @@ func (w *RecoveryWorker) executeRouting(
 	merchant *domain.Merchant,
 	settings *domain.MerchantSettings,
 	rawPhone, phoneHash string,
-	event crm.KotmanRiskEvent,
+	event crm.KaughtmanRiskEvent,
 	orderValue string,
 ) {
 	// TIER 1: CRM connector
@@ -355,14 +355,14 @@ func (w *RecoveryWorker) executeRouting(
 		slog.Error("Tier 2 WhatsApp send failed — falling through to Tier 3", "error", err)
 	}
 
-	// TIER 3: Kotman managed wallet
+	// TIER 3: Kaughtman managed wallet
 	const messageCostPaise = 100
 	if settings.WalletBalancePaise >= messageCostPaise {
-		slog.Info("routing via Kotman managed wallet", "merchant_id", settings.MerchantID)
+		slog.Info("routing via Kaughtman managed wallet", "merchant_id", settings.MerchantID)
 
-		masterKey := os.Getenv("KOTMAN_MASTER_TWILIO_KEY")
+		masterKey := os.Getenv("KAUGHTMAN_MASTER_TWILIO_KEY")
 		if masterKey == "" {
-			slog.Error("KOTMAN_MASTER_TWILIO_KEY not set — cannot send managed message")
+			slog.Error("KAUGHTMAN_MASTER_TWILIO_KEY not set — cannot send managed message")
 			return
 		}
 
@@ -551,7 +551,7 @@ func (w *RecoveryWorker) sendWhatsApp(
 		payload := interaktPayload{
 			CountryCode:  "+91",
 			PhoneNumber:  phoneWithoutCountry,
-			CallbackData: "kotman_rto_check",
+			CallbackData: "kaughtman_rto_check",
 			Type:         "Template",
 			Template: interaktTemplate{
 				Name:         templateName,

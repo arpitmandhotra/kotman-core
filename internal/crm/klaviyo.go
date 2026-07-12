@@ -10,13 +10,13 @@ import (
     "github.com/arpitmandhotra/api-integrator/internal/domain"
 )
 
-// KlaviyoConnector pushes Kotman risk signals into Klaviyo as profile properties
+// KlaviyoConnector pushes Kaughtman risk signals into Klaviyo as profile properties
 // and triggers pre-built flows via the Klaviyo Events API (v2026-02).
 //
 // Setup required in Klaviyo dashboard:
-//   1. Create a Flow triggered by "Kotman Cart Recovery" metric
-//   2. Create a Flow triggered by "Kotman Feedback Request" metric
-//   3. Add profile properties: kotman_risk_score, kotman_rto_count, kotman_is_vip
+//   1. Create a Flow triggered by "Kaughtman Cart Recovery" metric
+//   2. Create a Flow triggered by "Kaughtman Feedback Request" metric
+//   3. Add profile properties: kaughtman_risk_score, kaughtman_rto_count, kaughtman_is_vip
 type KlaviyoConnector struct {
     apiKey string
 }
@@ -27,9 +27,9 @@ func NewKlaviyoConnector(apiKey string) *KlaviyoConnector {
 
 func (k *KlaviyoConnector) Name() string { return "klaviyo" }
 
-func (k *KlaviyoConnector) SyncRiskEvent(ctx context.Context, event KotmanRiskEvent) error {
+func (k *KlaviyoConnector) SyncRiskEvent(ctx context.Context, event KaughtmanRiskEvent) error {
     // Klaviyo Events API v2 — creates/updates a profile and fires a metric event.
-    // This triggers any Klaviyo Flow listening for the "Kotman*" metric.
+    // This triggers any Klaviyo Flow listening for the "Kaughtman*" metric.
     // Docs: https://developers.klaviyo.com/en/reference/create_event
     payload := map[string]interface{}{
         "data": map[string]interface{}{
@@ -52,12 +52,12 @@ func (k *KlaviyoConnector) SyncRiskEvent(ctx context.Context, event KotmanRiskEv
                             // don't hold raw phones at sync time
                             "external_id": event.PhoneHash,
                             "properties": map[string]interface{}{
-                                "kotman_risk_score":    event.RiskScore,
-                                "kotman_rto_count":     event.RTOCount,
-                                "kotman_is_vip":        event.IsVIP,
-                                "kotman_merchant_id":   event.MerchantID,
-                                "kotman_discount_hint": event.DiscountValue,
-                                "kotman_segment":       event.SegmentTag,
+                                "kaughtman_risk_score":    event.RiskScore,
+                                "kaughtman_rto_count":     event.RTOCount,
+                                "kaughtman_is_vip":        event.IsVIP,
+                                "kaughtman_merchant_id":   event.MerchantID,
+                                "kaughtman_discount_hint": event.DiscountValue,
+                                "kaughtman_segment":       event.SegmentTag,
                             },
                         },
                     },
@@ -87,11 +87,11 @@ func (k *KlaviyoConnector) SyncRiskEvent(ctx context.Context, event KotmanRiskEv
 func (k *KlaviyoConnector) metricName(template string) string {
     switch template {
     case "STANDARD_CART_RECOVERY", "VIP_RECOVERY_PROMPTED":
-        return "Kotman Cart Recovery"
+        return "Kaughtman Cart Recovery"
     case "STANDARD_FEEDBACK_REQUEST", "INCENTIVIZED_VIP_FEEDBACK_COUPON":
-        return "Kotman Feedback Request"
+        return "Kaughtman Feedback Request"
     default:
-        return fmt.Sprintf("Kotman %s", template)
+        return fmt.Sprintf("Kaughtman %s", template)
     }
 }
 
@@ -153,13 +153,13 @@ func (k *KlaviyoConnector) EnrichProfile(ctx context.Context, rawPhone string, p
             "attributes": map[string]interface{}{
                 "phone_number": rawPhone,
                 "properties": map[string]interface{}{
-                    "kotman_trust_tier":           trustTier,
-                    "kotman_trust_score":          int(math.Round(trustScore)),
-                    "kotman_network_rto_rate":     roundedRtoRate,
-                    "kotman_total_network_orders": profile.TotalOrders,
-                    "kotman_preferred_category":   lastOrderCategory,
-                    "kotman_cod_reliability":      codReliability,
-                    "kotman_last_enriched":        time.Now().Format("2006-01-02"),
+                    "kaughtman_trust_tier":           trustTier,
+                    "kaughtman_trust_score":          int(math.Round(trustScore)),
+                    "kaughtman_network_rto_rate":     roundedRtoRate,
+                    "kaughtman_total_network_orders": profile.TotalOrders,
+                    "kaughtman_preferred_category":   lastOrderCategory,
+                    "kaughtman_cod_reliability":      codReliability,
+                    "kaughtman_last_enriched":        time.Now().Format("2006-01-02"),
                 },
             },
         },

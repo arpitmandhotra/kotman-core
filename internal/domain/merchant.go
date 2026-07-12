@@ -93,7 +93,7 @@ type MerchantSettings struct {
     ProviderAPIKey          string `gorm:"default:''"` // Twilio/Interakt key
     ProviderName            string `gorm:"default:''"` // "twilio" | "interakt"
 
-    // --- KOTMAN MANAGED WALLET ---
+    // --- KAUGHTMAN MANAGED WALLET ---
     WalletBalancePaise int `gorm:"default:0;column:wallet_balance_paise"`
 
     // Billing configuration
@@ -233,11 +233,11 @@ type OwnStoreAnalytics struct {
     // Risk score 0-100 where 100 = safest. Bucketed into 3 tiers.
     BuyerIntentDistribution   BuyerIntentBuckets `json:"buyer_intent_distribution"`
 
-    // Kotman Score average for this merchant's buyers
-    // Kotman Score = average PredictedRiskScore across all OrderAudit rows for this merchant
+    // Kaughtman Score average for this merchant's buyers
+    // Kaughtman Score = average PredictedRiskScore across all OrderAudit rows for this merchant
     // Labelled as: 0-39 = "High Risk", 40-69 = "Moderate", 70-84 = "Trusted", 85-100 = "VIP"
-    AvgKotmanScore            float64 `json:"avg_kotman_score"`
-    KotmanScoreLabel          string  `json:"kotman_score_label"` // "High Risk" | "Moderate" | "Trusted" | "VIP"
+    AvgKaughtmanScore            float64 `json:"avg_kaughtman_score"`
+    KaughtmanScoreLabel          string  `json:"kaughtman_score_label"` // "High Risk" | "Moderate" | "Trusted" | "VIP"
 
     // Refund/complaint rate on own store
     // Derived from CustomerFeedback rows where merchant_id = this merchant
@@ -271,7 +271,7 @@ type PincodeInsight struct {
     AvgCartINR    float64 `json:"avg_cart_inr"`
 }
 
-// CrossNetworkAnalytics — aggregate statistics across ALL merchants in the Kotman network.
+// CrossNetworkAnalytics — aggregate statistics across ALL merchants in the Kaughtman network.
 // CRITICAL DPDP RULE: every field here is a STATISTICAL AGGREGATE with minimum cohort of 50.
 // No individual buyer is identifiable from any field in this struct.
 // Individual phone hashes are never surfaced. Only distributions and percentiles.
@@ -283,7 +283,7 @@ type CrossNetworkAnalytics struct {
     NetworkMedianCartINR          float64 `json:"network_median_cart_inr"`
 
     // Top 10% spenders across the entire network
-    // "What do the top 10% of buyers across all Kotman merchants spend per order on average?"
+    // "What do the top 10% of buyers across all Kaughtman merchants spend per order on average?"
     NetworkTop10PctAvgCartINR     float64 `json:"network_top10_pct_avg_cart_inr"`
     NetworkTop10PctAvgMonthlyINR  float64 `json:"network_top10_pct_avg_monthly_inr"` // estimated monthly spend (avg_cart * avg_order_frequency)
 
@@ -298,15 +298,15 @@ type CrossNetworkAnalytics struct {
     SpendBandDistribution         SpendBandBreakdown `json:"spend_band_distribution"`
 
     // Refund rate across network (not merchant-specific — entire network aggregate)
-    // "Across all Kotman merchants, X% of orders result in a refund/RTO"
+    // "Across all Kaughtman merchants, X% of orders result in a refund/RTO"
     NetworkRTORateAggregate       float64 `json:"network_rto_rate_aggregate"`   // RTOs / total_orders across all merchants
     NetworkRefundRateAggregate    float64 `json:"network_refund_rate_aggregate"` // CustomerFeedback complaints / total_orders network-wide
     // For this merchant specifically vs network
     MerchantRTOVsNetworkDelta     float64 `json:"merchant_rto_vs_network_delta"` // positive = merchant worse than network
 
-    // Kotman Score comparison
-    MerchantAvgKotmanScore        float64 `json:"merchant_avg_kotman_score"`    // same as OwnStore.AvgKotmanScore
-    NetworkAvgKotmanScore         float64 `json:"network_avg_kotman_score"`     // across all merchants
+    // Kaughtman Score comparison
+    MerchantAvgKaughtmanScore        float64 `json:"merchant_avg_kaughtman_score"`    // same as OwnStore.AvgKaughtmanScore
+    NetworkAvgKaughtmanScore         float64 `json:"network_avg_kaughtman_score"`     // across all merchants
 
     // TEASER ONLY (available in free tier, full data requires module)
     // Teaser = aggregate figures above without SpendBandDistribution detail or overlap breakdowns

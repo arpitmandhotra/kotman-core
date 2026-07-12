@@ -20,7 +20,7 @@ type AIIngestionWorker struct {
 }
 
 func StartAIIngestionWorker(ctx context.Context, redisClient *redis.Client, postgresClient *gorm.DB) {
-	slog.Info("Starting Kotman AI Ingestion Worker thread...")
+	slog.Info("Starting Kaughtman AI Ingestion Worker thread...")
 
 	worker := &AIIngestionWorker{
 		redis: redisClient,

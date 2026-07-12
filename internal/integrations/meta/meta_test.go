@@ -167,7 +167,7 @@ func TestUploadVerifiedBuyers_TooSmall(t *testing.T) {
         hashes[i] = "hash_val"
     }
 
-    _, err := client.UploadVerifiedBuyers(context.Background(), "act_123", "token_xyz", "Kotman Verified Buyers", hashes)
+    _, err := client.UploadVerifiedBuyers(context.Background(), "act_123", "token_xyz", "Kaughtman Verified Buyers", hashes)
     if err == nil {
         t.Fatal("expected error, got nil")
     }

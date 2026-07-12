@@ -31,7 +31,7 @@ func (h *TrustHandler) HandleTrustScore(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid request body"})
 	}
 
-	merchantID, ok := c.Locals("kotman.merchant_id").(string)
+	merchantID, ok := c.Locals("kaughtman.merchant_id").(string)
 	if !ok || merchantID == "" {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Missing or invalid merchant context"})
 	}

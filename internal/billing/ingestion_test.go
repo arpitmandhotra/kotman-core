@@ -71,7 +71,7 @@ func TestProcessInboundOrder_IdempotencyAndAccumulator(t *testing.T) {
 			"phone": "+919876543210"
 		},
 		"note_attributes": [
-			{"name": "kotman_risk", "value": "low"}
+			{"name": "kaughtman_risk", "value": "low"}
 		],
 		"tags": "some_tag, another",
 		"source_name": "web"

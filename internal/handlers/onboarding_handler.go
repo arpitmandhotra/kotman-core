@@ -82,7 +82,7 @@ func (h *OnboardingHandler) RegisterMerchant(c *fiber.Ctx) error {
 
 	// M21 FIX: Read base URL from env so merchants don't get a hardcoded
 	// placeholder that points to an unclaimed domain.
-	apiBase := os.Getenv("KOTMAN_API_BASE_URL")
+	apiBase := os.Getenv("KAUGHTMAN_API_BASE_URL")
 	if apiBase == "" {
 		apiBase = "https://api.yourdomain.com" // only reached in local dev
 	}

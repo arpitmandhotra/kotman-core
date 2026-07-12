@@ -29,19 +29,19 @@ type OrderPayload struct {
 
 func DetectCheckoutMode(payload OrderPayload, merchantSettings domain.MerchantSettings) CheckoutDetectionResult {
 	// SIGNAL 1 — Cart attribute (Shopify native flow only):
-	hasKotmanRisk := false
-	hasKotmanTs := false
+	hasKaughtmanRisk := false
+	hasKaughtmanTs := false
 	for k, v := range payload.NoteAttributes {
 		kLower := strings.ToLower(k)
-		if kLower == "kotman_risk" && (v == "high" || v == "low") {
-			hasKotmanRisk = true
+		if kLower == "kaughtman_risk" && (v == "high" || v == "low") {
+			hasKaughtmanRisk = true
 		}
-		if kLower == "kotman_ts" && v != "" {
-			hasKotmanTs = true
+		if kLower == "kaughtman_ts" && v != "" {
+			hasKaughtmanTs = true
 		}
 	}
 
-	if hasKotmanRisk || hasKotmanTs {
+	if hasKaughtmanRisk || hasKaughtmanTs {
 		res := CheckoutDetectionResult{
 			Mode:           "native",
 			ThirdPartyName: "",
@@ -133,7 +133,7 @@ func DetectCheckoutMode(payload OrderPayload, merchantSettings domain.MerchantSe
 		return res
 	}
 
-	// SIGNAL 3 — Kotman SDK absence + known COD gateway:
+	// SIGNAL 3 — Kaughtman SDK absence + known COD gateway:
 	if payload.PaymentMethod == "cod" {
 		switch merchantSettings.CheckoutMode {
 		case "native":

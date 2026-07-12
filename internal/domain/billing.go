@@ -22,7 +22,7 @@ type BillableEvent struct {
 	RawWebhookBody  string     `gorm:"type:text"` // stores raw JSON for dispute resolution; MUST be redacted via GDPR webhooks. Only FeePaise, OrderValuePaise, PhoneHash, and CheckoutMode are permanent.
 	PhoneHash       string     `gorm:"index"`     // for cross-referencing TrustProfile
 	// PhoneHashMeta stores a standard SHA-256 of the raw phone number WITHOUT
-	// the Kotman pepper, because Meta's identity graph requires plain SHA-256
+	// the Kaughtman pepper, because Meta's identity graph requires plain SHA-256
 	// for cross-device matching. Unlike PhoneHash (peppered HMAC, reversible
 	// only with the pepper), SHA-256 without a pepper is theoretically
 	// vulnerable to rainbow-table attacks given India's finite 10-digit phone
@@ -64,8 +64,8 @@ type MerchantBillingAccumulator struct {
 	IsInvoiced    bool   `gorm:"default:false"`
 }
 
-// KotmanFee resolves the transaction fee strictly on the 'orderValuePaise' bounds.
-func KotmanFee(orderValuePaise int) int {
+// KaughtmanFee resolves the transaction fee strictly on the 'orderValuePaise' bounds.
+func KaughtmanFee(orderValuePaise int) int {
 	switch {
 	case orderValuePaise <= 50000:
 		return 500 // ≤ ₹500 → ₹5.00

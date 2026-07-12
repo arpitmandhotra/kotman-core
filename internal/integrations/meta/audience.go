@@ -97,7 +97,7 @@ func (c *AudienceClient) UploadVerifiedBuyers(ctx context.Context,
         createPayload := map[string]interface{}{
             "name":                 audienceName,
             "subtype":              "CUSTOM",
-            "description":          "Kotman-verified high-trust COD buyers",
+            "description":          "Kaughtman-verified high-trust COD buyers",
             "customer_file_source": "PARTNER_PROVIDED_ONLY",
             "access_token":         accessToken,
         }

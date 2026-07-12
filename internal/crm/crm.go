@@ -13,9 +13,9 @@ import (
     "github.com/arpitmandhotra/api-integrator/internal/domain"
 )
 
-// KotmanRiskEvent is the standardised payload every CRM connector receives.
+// KaughtmanRiskEvent is the standardised payload every CRM connector receives.
 // The connector's job is to translate this into its own API format.
-type KotmanRiskEvent struct {
+type KaughtmanRiskEvent struct {
     PhoneHash     string  // 8-char preview for logging, full hash for CRM custom field
     MerchantID    string
     Template      string  // "STANDARD_CART_RECOVERY" | "VIP_RECOVERY_PROMPTED" etc.
@@ -26,7 +26,7 @@ type KotmanRiskEvent struct {
     EventTime     time.Time
     // SegmentTag is the human-readable buyer segment pushed as a CRM property.
     // Values: "vip_buyer" | "high_intent" | "prepaid_candidate" | "rto_risk"
-    // Connectors should push this as a contact attribute named "kotman_segment".
+    // Connectors should push this as a contact attribute named "kaughtman_segment".
     SegmentTag    string
 }
 
@@ -34,10 +34,10 @@ type KotmanRiskEvent struct {
 type Connector interface {
     // Name returns the CRM identifier for logging.
     Name() string
-    // SyncRiskEvent pushes a Kotman risk event into the CRM as a contact
+    // SyncRiskEvent pushes a Kaughtman risk event into the CRM as a contact
     // property update + triggers the appropriate automation workflow.
-    SyncRiskEvent(ctx context.Context, event KotmanRiskEvent) error
-    // EnrichProfile updates the CRM contact with detailed Kotman profiling data.
+    SyncRiskEvent(ctx context.Context, event KaughtmanRiskEvent) error
+    // EnrichProfile updates the CRM contact with detailed Kaughtman profiling data.
     EnrichProfile(ctx context.Context, rawPhone string, profile domain.TrustProfile, lastOrderCategory string) error
 }
 

@@ -15,12 +15,12 @@ func TestDetectCheckoutMode(t *testing.T) {
 		expectedTPName   string
 	}{
 		{
-			name: "1. Shopify order with kotman cart attributes -> native",
+			name: "1. Shopify order with kaughtman cart attributes -> native",
 			payload: OrderPayload{
 				Platform: "shopify",
 				NoteAttributes: map[string]string{
-					"kotman_risk": "high",
-					"kotman_ts":   "12345678",
+					"kaughtman_risk": "high",
+					"kaughtman_ts":   "12345678",
 				},
 				SourceName: "web",
 			},
@@ -77,11 +77,11 @@ func TestDetectCheckoutMode(t *testing.T) {
 			expectedTPName: "",
 		},
 		{
-			name: "6. Order with BOTH kotman cart attribute AND GoKwik fingerprint -> native wins",
+			name: "6. Order with BOTH kaughtman cart attribute AND GoKwik fingerprint -> native wins",
 			payload: OrderPayload{
 				Platform: "shopify",
 				NoteAttributes: map[string]string{
-					"kotman_risk":     "low",
+					"kaughtman_risk":  "low",
 					"gokwik_order_id": "gk_999",
 				},
 				SourceName: "GoKwik",
@@ -207,9 +207,9 @@ func TestComputeFeeAndTiers(t *testing.T) {
 		{1000001, 10000},
 	}
 	for _, tt := range feeTests {
-		res := domain.KotmanFee(tt.value)
+		res := domain.KaughtmanFee(tt.value)
 		if res != tt.expected {
-			t.Errorf("KotmanFee(%d) expected %d, got %d", tt.value, tt.expected, res)
+			t.Errorf("KaughtmanFee(%d) expected %d, got %d", tt.value, tt.expected, res)
 		}
 	}
 

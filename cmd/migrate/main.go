@@ -14,7 +14,7 @@ func main() {
 		log.Printf("Warning: .env file not found: %v", err)
 	}
 
-	log.Println("🚀 Starting Kotman Core Migration CLI...")
+	log.Println("🚀 Starting Kaughtman Core Migration CLI...")
 
 	// 1. Connect to the database (This uses your perfectly configured connection pool)
 	db := database.NewPostgresClient()
@@ -244,7 +244,7 @@ func main() {
 	}
 
 	log.Println("✅ Database schema perfectly synchronized. Safe to deploy.")
-	log.Println("   ├── public.*: Core Kotman tables (Merchant, BillableEvent, etc.)")
+	log.Println("   ├── public.*: Core Kaughtman tables (Merchant, BillableEvent, etc.)")
 	log.Println("   ├── signals.*: Category, Geo, Payment signal tables + index base periods")
 	log.Println("   └── clients.*: Data client access tables (schema-only, no API routes yet)")
 }

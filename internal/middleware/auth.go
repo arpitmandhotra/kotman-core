@@ -73,8 +73,8 @@ func RequireAPIKey(pg *gorm.DB, redisClient *redis.Client) fiber.Handler {
 				}
 
 				// CACHE HIT! Set BOTH backpack variables to keep everything happy
-				c.Locals("kotman.merchant", merchant)
-				c.Locals("kotman.merchant_id", merchant.ID)
+				c.Locals("kaughtman.merchant", merchant)
+				c.Locals("kaughtman.merchant_id", merchant.ID)
 				return c.Next()
 			}
 		}
@@ -121,8 +121,8 @@ func RequireAPIKey(pg *gorm.DB, redisClient *redis.Client) fiber.Handler {
 		)
 
 		// Set BOTH backpack variables
-		c.Locals("kotman.merchant", merchant)
-		c.Locals("kotman.merchant_id", merchant.ID)
+		c.Locals("kaughtman.merchant", merchant)
+		c.Locals("kaughtman.merchant_id", merchant.ID)
 
 		return c.Next()
 	}

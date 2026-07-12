@@ -14,13 +14,13 @@ import (
     "github.com/arpitmandhotra/api-integrator/internal/domain"
 )
 
-// HubSpotConnector upserts a contact in HubSpot with Kotman risk properties
+// HubSpotConnector upserts a contact in HubSpot with Kaughtman risk properties
 // and triggers a workflow via the HubSpot Workflows API.
 //
 // Setup required in HubSpot:
-//   1. Create custom contact properties: kotman_risk_score, kotman_rto_count,
-//      kotman_template, kotman_is_vip, kotman_merchant_id
-//   2. Create a Workflow triggered when kotman_template is enrolled
+//   1. Create custom contact properties: kaughtman_risk_score, kaughtman_rto_count,
+//      kaughtman_template, kaughtman_is_vip, kaughtman_merchant_id
+//   2. Create a Workflow triggered when kaughtman_template is enrolled
 // Docs: https://developers.hubspot.com/docs/api/crm/contacts
 type HubSpotConnector struct {
     apiKey string
@@ -32,27 +32,27 @@ func NewHubSpotConnector(apiKey string) *HubSpotConnector {
 
 func (h *HubSpotConnector) Name() string { return "hubspot" }
 
-func (h *HubSpotConnector) SyncRiskEvent(ctx context.Context, event KotmanRiskEvent) error {
+func (h *HubSpotConnector) SyncRiskEvent(ctx context.Context, event KaughtmanRiskEvent) error {
     // HubSpot identifies contacts by email or phone. Since we only have the hash,
-    // we upsert by a custom unique property: kotman_phone_hash.
+    // we upsert by a custom unique property: kaughtman_phone_hash.
     // The merchant must create this as a unique contact property in their HubSpot portal.
 
     // Step 1: Upsert contact with risk properties
     upsertPayload := map[string]interface{}{
         "properties": map[string]interface{}{
-            "kotman_phone_hash":  event.PhoneHash,
-            "kotman_risk_score":  fmt.Sprintf("%.2f", event.RiskScore),
-            "kotman_rto_count":   event.RTOCount,
-            "kotman_is_vip":      event.IsVIP,
-            "kotman_template":    event.Template,
-            "kotman_merchant_id": event.MerchantID,
-            "kotman_segment":     event.SegmentTag,
+            "kaughtman_phone_hash":  event.PhoneHash,
+            "kaughtman_risk_score":  fmt.Sprintf("%.2f", event.RiskScore),
+            "kaughtman_rto_count":   event.RTOCount,
+            "kaughtman_is_vip":      event.IsVIP,
+            "kaughtman_template":    event.Template,
+            "kaughtman_merchant_id": event.MerchantID,
+            "kaughtman_segment":     event.SegmentTag,
         },
-        "idProperty": "kotman_phone_hash",
+        "idProperty": "kaughtman_phone_hash",
     }
 
     err := patchJSON(ctx,
-        fmt.Sprintf("https://api.hubapi.com/crm/v3/objects/contacts/%s?idProperty=kotman_phone_hash",
+        fmt.Sprintf("https://api.hubapi.com/crm/v3/objects/contacts/%s?idProperty=kaughtman_phone_hash",
             url.PathEscape(event.PhoneHash)),
         map[string]string{
             "Authorization": "Bearer " + h.apiKey,
@@ -64,12 +64,12 @@ func (h *HubSpotConnector) SyncRiskEvent(ctx context.Context, event KotmanRiskEv
     if err != nil {
         createPayload := map[string]interface{}{
             "properties": map[string]interface{}{
-                "kotman_phone_hash":  event.PhoneHash,
-                "kotman_risk_score":  fmt.Sprintf("%.2f", event.RiskScore),
-                "kotman_rto_count":   event.RTOCount,
-                "kotman_is_vip":      event.IsVIP,
-                "kotman_template":    event.Template,
-                "kotman_merchant_id": event.MerchantID,
+                "kaughtman_phone_hash":  event.PhoneHash,
+                "kaughtman_risk_score":  fmt.Sprintf("%.2f", event.RiskScore),
+                "kaughtman_rto_count":   event.RTOCount,
+                "kaughtman_is_vip":      event.IsVIP,
+                "kaughtman_template":    event.Template,
+                "kaughtman_merchant_id": event.MerchantID,
             },
         }
         err = postJSON(ctx,
@@ -191,13 +191,13 @@ func (h *HubSpotConnector) EnrichProfile(ctx context.Context, rawPhone string, p
     // 3. PATCH to /crm/v3/objects/contacts/{id}
     payload := map[string]interface{}{
         "properties": map[string]interface{}{
-            "kotman_trust_tier":           trustTier,
-            "kotman_trust_score":          fmt.Sprintf("%d", int(math.Round(trustScore))),
-            "kotman_network_rto_rate":     fmt.Sprintf("%.4f", roundedRtoRate),
-            "kotman_total_network_orders": fmt.Sprintf("%d", profile.TotalOrders),
-            "kotman_preferred_category":   lastOrderCategory,
-            "kotman_cod_reliability":      codReliability,
-            "kotman_last_enriched":        time.Now().Format("2006-01-02"),
+            "kaughtman_trust_tier":           trustTier,
+            "kaughtman_trust_score":          fmt.Sprintf("%d", int(math.Round(trustScore))),
+            "kaughtman_network_rto_rate":     fmt.Sprintf("%.4f", roundedRtoRate),
+            "kaughtman_total_network_orders": fmt.Sprintf("%d", profile.TotalOrders),
+            "kaughtman_preferred_category":   lastOrderCategory,
+            "kaughtman_cod_reliability":      codReliability,
+            "kaughtman_last_enriched":        time.Now().Format("2006-01-02"),
         },
     }
 

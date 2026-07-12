@@ -17,13 +17,13 @@ var (
 )
 
 func loadPepper() {
-	pepper = os.Getenv("KOTMAN_GLOBAL_PEPPER")
+	pepper = os.Getenv("KAUGHTMAN_GLOBAL_PEPPER")
 	if pepper == "" {
 		// Detect test environment to avoid breaking test execution
 		if strings.HasSuffix(os.Args[0], ".test") || strings.HasSuffix(os.Args[0], ".test.exe") || strings.Contains(os.Args[0], "/_test/") {
 			pepper = "test_default_pepper"
 		} else {
-			panic("CRITICAL: KOTMAN_GLOBAL_PEPPER environment variable is missing or empty — phone hashing cannot be initialized safely")
+			panic("CRITICAL: KAUGHTMAN_GLOBAL_PEPPER environment variable is missing or empty — phone hashing cannot be initialized safely")
 		}
 	}
 }

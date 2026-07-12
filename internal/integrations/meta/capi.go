@@ -33,7 +33,7 @@ func NewCAPIClient() *CAPIClient {
     }
 }
 
-// ComputeTrustMultiplier determines the valuation multiplier based on Kotman trust metrics.
+// ComputeTrustMultiplier determines the valuation multiplier based on Kaughtman trust metrics.
 // score >= 85  AND totalOrders > 0  → 1.50  (VIP — confirmed history)
 // score >= 70  AND totalOrders > 0  → 1.25  (Trusted)
 // score >= 60  AND totalOrders > 0  → 1.00  (Allow COD threshold — baseline)
@@ -132,8 +132,8 @@ func (c *CAPIClient) SendPurchaseEvent(ctx context.Context, input CAPIEventInput
             "currency":          "INR",
             "content_category":  input.CategoryL1,
             "order_id":          input.OrderID,
-            "kotman_score":      input.TrustScore,
-            "kotman_multiplier": multiplier,
+            "kaughtman_score":      input.TrustScore,
+            "kaughtman_multiplier": multiplier,
         },
     }
 

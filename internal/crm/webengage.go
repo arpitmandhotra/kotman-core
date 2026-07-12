@@ -8,15 +8,15 @@ import (
     "github.com/arpitmandhotra/api-integrator/internal/domain"
 )
 
-// WebEngageConnector pushes Kotman risk events to WebEngage's REST API.
+// WebEngageConnector pushes Kaughtman risk events to WebEngage's REST API.
 // WebEngage is widely used by Indian D2C brands for push notifications,
 // in-app messages, and journey automation.
 //
 // Setup required in WebEngage dashboard:
 //   1. Go to Data Platform > Integrations > Rest API to get your license code + API key
-//   2. Create custom user attributes: kotman_risk_score, kotman_rto_count,
-//      kotman_is_vip in User Data settings
-//   3. Create a Journey triggered by the "Kotman Recovery" or "Kotman Feedback" event
+//   2. Create custom user attributes: kaughtman_risk_score, kaughtman_rto_count,
+//      kaughtman_is_vip in User Data settings
+//   3. Create a Journey triggered by the "Kaughtman Recovery" or "Kaughtman Feedback" event
 // Docs: https://docs.webengage.com/docs/rest-api-getting-started
 type WebEngageConnector struct {
     apiKey      string
@@ -34,20 +34,20 @@ func NewWebEngageConnector(apiKey, licenseCode string) *WebEngageConnector {
 
 func (w *WebEngageConnector) Name() string { return "webengage" }
 
-func (w *WebEngageConnector) SyncRiskEvent(ctx context.Context, event KotmanRiskEvent) error {
+func (w *WebEngageConnector) SyncRiskEvent(ctx context.Context, event KaughtmanRiskEvent) error {
     headers := map[string]string{
         "Authorization": "Bearer " + w.apiKey,
     }
 
-    // Step 1: Create/update user profile with Kotman attributes
+    // Step 1: Create/update user profile with Kaughtman attributes
     userPayload := map[string]interface{}{
         "userId": event.PhoneHash,
         "attributes": map[string]interface{}{
-            "kotman_risk_score":  event.RiskScore,
-            "kotman_rto_count":   event.RTOCount,
-            "kotman_is_vip":      event.IsVIP,
-            "kotman_merchant_id": event.MerchantID,
-            "kotman_segment":     event.SegmentTag,
+            "kaughtman_risk_score":  event.RiskScore,
+            "kaughtman_rto_count":   event.RTOCount,
+            "kaughtman_is_vip":      event.IsVIP,
+            "kaughtman_merchant_id": event.MerchantID,
+            "kaughtman_segment":     event.SegmentTag,
         },
     }
 
@@ -86,11 +86,11 @@ func (w *WebEngageConnector) SyncRiskEvent(ctx context.Context, event KotmanRisk
 func (w *WebEngageConnector) eventName(template string) string {
     switch template {
     case "STANDARD_CART_RECOVERY", "VIP_RECOVERY_PROMPTED":
-        return "Kotman Recovery"
+        return "Kaughtman Recovery"
     case "STANDARD_FEEDBACK_REQUEST", "INCENTIVIZED_VIP_FEEDBACK_COUPON":
-        return "Kotman Feedback"
+        return "Kaughtman Feedback"
     default:
-        return "Kotman Event"
+        return "Kaughtman Event"
     }
 }
 

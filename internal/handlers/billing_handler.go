@@ -39,7 +39,7 @@ type VerifyRequest struct {
 
 // CreateWalletTopUp initializes a payment order in Razorpay for a wallet top-up
 func (h *BillingHandler) CreateWalletTopUp(c *fiber.Ctx) error {
-	merchantIDVal := c.Locals("kotman.merchant_id")
+	merchantIDVal := c.Locals("kaughtman.merchant_id")
 	merchantID, ok := merchantIDVal.(string)
 	if !ok || merchantID == "" {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
@@ -95,7 +95,7 @@ func (h *BillingHandler) CreateWalletTopUp(c *fiber.Ctx) error {
 
 // VerifyPaymentAndActivate validates Razorpay signatures and transitions the merchant to Active Mode
 func (h *BillingHandler) VerifyPaymentAndActivate(c *fiber.Ctx) error {
-	merchantIDVal := c.Locals("kotman.merchant_id")
+	merchantIDVal := c.Locals("kaughtman.merchant_id")
 	merchantID, ok := merchantIDVal.(string)
 	if !ok || merchantID == "" {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
@@ -175,7 +175,7 @@ func (h *BillingHandler) VerifyPaymentAndActivate(c *fiber.Ctx) error {
 // Route: POST /v1/billing/module/purchase
 // Body: { "module": "cross_network" | "crm_upsell" }
 func (h *BillingHandler) PurchaseModule(c *fiber.Ctx) error {
-	merchantIDVal := c.Locals("kotman.merchant_id")
+	merchantIDVal := c.Locals("kaughtman.merchant_id")
 	merchantID, ok := merchantIDVal.(string)
 	if !ok || merchantID == "" {
 		return c.Status(401).JSON(fiber.Map{"success": false, "error": "unauthorized"})
@@ -241,7 +241,7 @@ func (h *BillingHandler) PurchaseModule(c *fiber.Ctx) error {
 // Route: POST /v1/billing/module/verify
 // Body: { "razorpay_order_id", "razorpay_payment_id", "razorpay_signature" }
 func (h *BillingHandler) VerifyModulePurchase(c *fiber.Ctx) error {
-	merchantIDVal := c.Locals("kotman.merchant_id")
+	merchantIDVal := c.Locals("kaughtman.merchant_id")
 	merchantID, ok := merchantIDVal.(string)
 	if !ok || merchantID == "" {
 		return c.Status(401).JSON(fiber.Map{"success": false, "error": "unauthorized"})

@@ -280,7 +280,7 @@ func (h *OAuthHandler) HandleWooCommerceAuthStart(c *fiber.Ctx) error {
 
 	appName := os.Getenv("WOOCOMMERCE_APP_NAME")
 	if appName == "" {
-		appName = "Kotman RTO"
+		appName = "Kaughtman RTO"
 	}
 
 	authURL, err := woocommerce.BuildAuthorizeURL(storeURL, appName, returnURL, callbackURL, merchantID)

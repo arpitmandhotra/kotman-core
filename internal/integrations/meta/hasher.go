@@ -9,7 +9,7 @@ import (
 
 // HashForMeta produces a plain SHA-256 hex digest suitable for Meta's
 // Conversions API user_data fields. This is intentionally different from
-// Kotman's internal HashPhone (which uses peppered HMAC-SHA256).
+// Kaughtman's internal HashPhone (which uses peppered HMAC-SHA256).
 // Meta requires plain SHA-256 to match against their identity graph.
 // Input is lowercased and whitespace-stripped before hashing per Meta spec.
 func HashForMeta(raw string) string {

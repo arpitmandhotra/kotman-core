@@ -150,7 +150,7 @@ func TestRunAudienceSync_Integration(t *testing.T) {
         w.Header().Set("Content-Type", "application/json")
 
         if r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/customaudiences") {
-            w.Write([]byte(`{"data": [{"id": "aud_12345", "name": "Kotman Verified Buyers - Test Meta Store"}]}`))
+            w.Write([]byte(`{"data": [{"id": "aud_12345", "name": "Kaughtman Verified Buyers - Test Meta Store"}]}`))
             return
         }
 

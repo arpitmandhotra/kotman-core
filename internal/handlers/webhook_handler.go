@@ -39,7 +39,7 @@ func NewWebhookHandler(pgDB *gorm.DB, rdb *redis.Client, shopifySecret, wooSecre
 
 // resolveMerchantID locates the Merchant ID associated with the incoming webhook platform request.
 // WooCommerce requires the X-Wc-Webhook-Source header to be present (configured during WooCommerce webhook setup)
-// and Magento requires X-Kotman-Merchant-Domain set via the Magento integration configuration.
+// and Magento requires X-Kaughtman-Merchant-Domain set via the Magento integration configuration.
 func (h *WebhookHandler) resolveMerchantID(c *fiber.Ctx, platform string) string {
 	var shopDomain string
 	switch platform {
@@ -51,7 +51,7 @@ func (h *WebhookHandler) resolveMerchantID(c *fiber.Ctx, platform string) string
 			return "" // require X-Wc-Webhook-Source; reject if missing
 		}
 	case "magento":
-		shopDomain = c.Get("X-Kotman-Merchant-Domain")
+		shopDomain = c.Get("X-Kaughtman-Merchant-Domain")
 	}
 
 	if shopDomain == "" {

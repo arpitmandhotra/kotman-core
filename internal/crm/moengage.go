@@ -8,13 +8,13 @@ import (
     "github.com/arpitmandhotra/api-integrator/internal/domain"
 )
 
-// MoEngageConnector pushes Kotman risk events to MoEngage's Data API.
+// MoEngageConnector pushes Kaughtman risk events to MoEngage's Data API.
 // MoEngage is dominant among Indian D2C brands (Mamaearth, Boat, Sugar, etc.)
 //
 // Setup required in MoEngage dashboard:
-//   1. Create custom user attributes: kotman_risk_score, kotman_rto_count,
-//      kotman_is_vip, kotman_merchant_id
-//   2. Create a Campaign/Flow triggered by "kotman_recovery" or "kotman_feedback" event
+//   1. Create custom user attributes: kaughtman_risk_score, kaughtman_rto_count,
+//      kaughtman_is_vip, kaughtman_merchant_id
+//   2. Create a Campaign/Flow triggered by "kaughtman_recovery" or "kaughtman_feedback" event
 // Docs: https://developers.moengage.com/hc/en-us/articles/4404910561428
 type MoEngageConnector struct {
     apiKey    string
@@ -32,7 +32,7 @@ func NewMoEngageConnector(apiKey, appID string) *MoEngageConnector {
 
 func (m *MoEngageConnector) Name() string { return "moengage" }
 
-func (m *MoEngageConnector) SyncRiskEvent(ctx context.Context, event KotmanRiskEvent) error {
+func (m *MoEngageConnector) SyncRiskEvent(ctx context.Context, event KaughtmanRiskEvent) error {
     // MoEngage uses Basic Auth: base64(APP_ID:DATA_API_KEY)
     basicAuth := base64.StdEncoding.EncodeToString(
         []byte(m.appID + ":" + m.apiKey),
@@ -43,12 +43,12 @@ func (m *MoEngageConnector) SyncRiskEvent(ctx context.Context, event KotmanRiskE
         "type": "customer",
         "customer_id": event.PhoneHash, // Use hash as stable anonymous ID
         "attributes": map[string]interface{}{
-            "kotman_risk_score":    event.RiskScore,
-            "kotman_rto_count":     event.RTOCount,
-            "kotman_is_vip":        event.IsVIP,
-            "kotman_merchant_id":   event.MerchantID,
-            "kotman_last_template": event.Template,
-            "kotman_segment":       event.SegmentTag,
+            "kaughtman_risk_score":    event.RiskScore,
+            "kaughtman_rto_count":     event.RTOCount,
+            "kaughtman_is_vip":        event.IsVIP,
+            "kaughtman_merchant_id":   event.MerchantID,
+            "kaughtman_last_template": event.Template,
+            "kaughtman_segment":       event.SegmentTag,
         },
     }
 
@@ -100,11 +100,11 @@ func (m *MoEngageConnector) SyncRiskEvent(ctx context.Context, event KotmanRiskE
 func (m *MoEngageConnector) eventName(template string) string {
     switch template {
     case "STANDARD_CART_RECOVERY", "VIP_RECOVERY_PROMPTED":
-        return "kotman_recovery"
+        return "kaughtman_recovery"
     case "STANDARD_FEEDBACK_REQUEST", "INCENTIVIZED_VIP_FEEDBACK_COUPON":
-        return "kotman_feedback"
+        return "kaughtman_feedback"
     default:
-        return "kotman_event"
+        return "kaughtman_event"
     }
 }
 

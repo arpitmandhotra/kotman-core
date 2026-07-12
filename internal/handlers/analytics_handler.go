@@ -29,7 +29,7 @@ func NewAnalyticsHandler(pgDB *gorm.DB, redisClient *redis.Client) *AnalyticsHan
 // Route: GET /v1/merchants/insights
 // Auth: RequireAPIKey middleware (merchant context in c.Locals)
 func (h *AnalyticsHandler) GetMerchantInsights(c *fiber.Ctx) error {
-	merchantIDVal := c.Locals("kotman.merchant_id")
+	merchantIDVal := c.Locals("kaughtman.merchant_id")
 	merchantID, ok := merchantIDVal.(string)
 	if !ok || merchantID == "" {
 		return c.Status(401).JSON(fiber.Map{"success": false, "error": "unauthorized"})
@@ -289,19 +289,19 @@ func (h *AnalyticsHandler) computeOwnStoreAnalytics(ctx context.Context, merchan
 		buckets.ModeratePercent = float64(buckets.ModerateCount) / float64(total)
 		buckets.TrustedPercent = float64(buckets.TrustedCount) / float64(total)
 		buckets.VIPPercent = float64(buckets.VIPCount) / float64(total)
-		result.AvgKotmanScore = scoreSum / float64(total)
+		result.AvgKaughtmanScore = scoreSum / float64(total)
 	}
 	result.BuyerIntentDistribution = buckets
 
 	switch {
-	case result.AvgKotmanScore >= 85:
-		result.KotmanScoreLabel = "VIP"
-	case result.AvgKotmanScore >= 70:
-		result.KotmanScoreLabel = "Trusted"
-	case result.AvgKotmanScore >= 40:
-		result.KotmanScoreLabel = "Moderate"
+	case result.AvgKaughtmanScore >= 85:
+		result.KaughtmanScoreLabel = "VIP"
+	case result.AvgKaughtmanScore >= 70:
+		result.KaughtmanScoreLabel = "Trusted"
+	case result.AvgKaughtmanScore >= 40:
+		result.KaughtmanScoreLabel = "Moderate"
 	default:
-		result.KotmanScoreLabel = "High Risk"
+		result.KaughtmanScoreLabel = "High Risk"
 	}
 
 	// --- Own store refund/complaint rate from CustomerFeedback ---
@@ -577,19 +577,19 @@ func (h *AnalyticsHandler) computeCrossNetworkAnalytics(ctx context.Context, mer
 	`, merchantID).Scan(&merchantRTORow)
 	result.MerchantRTOVsNetworkDelta = merchantRTORow.RTORate - result.NetworkRTORateAggregate
 
-	// Kotman scores
+	// Kaughtman scores
 	var networkAvgScore struct{ Avg float64 }
 	h.pg.WithContext(ctx).Raw(`
 		SELECT AVG(predicted_risk_score) AS avg FROM order_audits WHERE predicted_risk_score > 0
 	`).Scan(&networkAvgScore)
-	result.NetworkAvgKotmanScore = networkAvgScore.Avg
+	result.NetworkAvgKaughtmanScore = networkAvgScore.Avg
 
 	var merchantAvgScore struct{ Avg float64 }
 	h.pg.WithContext(ctx).Raw(`
 		SELECT AVG(predicted_risk_score) AS avg FROM order_audits
 		WHERE merchant_id = ? AND predicted_risk_score > 0
 	`, merchantID).Scan(&merchantAvgScore)
-	result.MerchantAvgKotmanScore = merchantAvgScore.Avg
+	result.MerchantAvgKaughtmanScore = merchantAvgScore.Avg
 
 	return result, nil
 }

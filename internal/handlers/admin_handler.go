@@ -87,7 +87,7 @@ func (h *AdminHandler) CommitCSV(c *fiber.Ctx) error {
 		platform = c.Query("platform", "generic")
 	}
 
-	merchantID, ok := c.Locals("kotman.merchant_id").(string)
+	merchantID, ok := c.Locals("kaughtman.merchant_id").(string)
 	if !ok || merchantID == "" {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
 			"error": "missing or invalid merchant context",
@@ -105,7 +105,7 @@ func (h *AdminHandler) CommitCSV(c *fiber.Ctx) error {
 	return c.Status(fiber.StatusOK).JSON(result)
 }
 
-// GetRecentBlocks fetches the latest scammers caught by the Kotman engine
+// GetRecentBlocks fetches the latest scammers caught by the Kaughtman engine
 func (h *AdminHandler) GetRecentBlocks(c *fiber.Ctx) error {
 	var scammers []domain.TrustProfile
 

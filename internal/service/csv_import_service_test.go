@@ -145,8 +145,8 @@ ORD3,9876543211,"₹1,500.00",16/03/2024,fulfilled,paid
 
 	// Let's seed ORD1's phone hash (+919876543210)
 	// Normalisation yields "919876543210"
-	// Wait, crypto.HashPhone will actually hash the normalized digits "919876543210" with KOTMAN_GLOBAL_PEPPER.
-	// Since we are running the test with KOTMAN_GLOBAL_PEPPER env variable set or defaulted, let's use the actual HashPhone value.
+	// Wait, crypto.HashPhone will actually hash the normalized digits "919876543210" with KAUGHTMAN_GLOBAL_PEPPER.
+	// Since we are running the test with KAUGHTMAN_GLOBAL_PEPPER env variable set or defaulted, let's use the actual HashPhone value.
 	t.Log("PEPPER in test:", svc.pg)
 
 	// Let's resolve the phone hash for ORD1 (+919876543210)

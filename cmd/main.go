@@ -39,9 +39,9 @@ func main() {
 	wooSecret := os.Getenv("WOOCOMMERCE_WEBHOOK_SECRET")
 	magentoSecret := os.Getenv("MAGENTO_WEBHOOK_SECRET")
 
-	// Validate KOTMAN_GLOBAL_PEPPER at startup
-	if os.Getenv("KOTMAN_GLOBAL_PEPPER") == "" {
-		log.Fatal("CRITICAL: KOTMAN_GLOBAL_PEPPER environment variable is not set — phone hashes are reversible without a pepper")
+	// Validate KAUGHTMAN_GLOBAL_PEPPER at startup
+	if os.Getenv("KAUGHTMAN_GLOBAL_PEPPER") == "" {
+		log.Fatal("CRITICAL: KAUGHTMAN_GLOBAL_PEPPER environment variable is not set — phone hashes are reversible without a pepper")
 	}
 
 	customLog := logger.New()

@@ -49,8 +49,8 @@ func TestSendWhatsApp_Interakt_Success(t *testing.T) {
 		if payload.CountryCode != "+91" {
 			t.Errorf("expected CountryCode '+91', got %q", payload.CountryCode)
 		}
-		if payload.Template.Name != "kotman_rto_verification" {
-			t.Errorf("expected template name 'kotman_rto_verification', got %q", payload.Template.Name)
+		if payload.Template.Name != "kaughtman_rto_verification" {
+			t.Errorf("expected template name 'kaughtman_rto_verification', got %q", payload.Template.Name)
 		}
 		if len(payload.Template.BodyValues) != 2 || payload.Template.BodyValues[0] != "TestStore" || payload.Template.BodyValues[1] != "Rs. 500" {
 			t.Errorf("expected template bodyValues ['TestStore', 'Rs. 500'], got %v", payload.Template.BodyValues)
@@ -69,7 +69,7 @@ func TestSendWhatsApp_Interakt_Success(t *testing.T) {
 	// Configure environment for the duration of this test
 	t.Setenv("WHATSAPP_PROVIDER", "interakt")
 	t.Setenv("INTERAKT_API_KEY", "test_api_key_123")
-	t.Setenv("WHATSAPP_TEMPLATE_NAME", "kotman_rto_verification")
+	t.Setenv("WHATSAPP_TEMPLATE_NAME", "kaughtman_rto_verification")
 
 	worker := &RecoveryWorker{}
 	ctx := context.Background()
@@ -101,7 +101,7 @@ func TestSendWhatsApp_Interakt_Timeout(t *testing.T) {
 	// Configure environment
 	t.Setenv("WHATSAPP_PROVIDER", "interakt")
 	t.Setenv("INTERAKT_API_KEY", "test_api_key_123")
-	t.Setenv("WHATSAPP_TEMPLATE_NAME", "kotman_rto_verification")
+	t.Setenv("WHATSAPP_TEMPLATE_NAME", "kaughtman_rto_verification")
 
 	worker := &RecoveryWorker{}
 	ctx := context.Background()

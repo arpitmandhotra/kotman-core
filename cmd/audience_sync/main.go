@@ -110,7 +110,7 @@ func RunAudienceSync(pg *gorm.DB) error {
         }
 
         // c. Call UploadVerifiedBuyers
-        audienceName := "Kotman Verified Buyers - " + merchant.StoreName
+        audienceName := "Kaughtman Verified Buyers - " + merchant.StoreName
         res, err := client.UploadVerifiedBuyers(ctx, settings.MetaAdAccountID, settings.MetaAccessToken, audienceName, results)
         if err != nil {
             slog.Error("audience_sync: upload to Meta failed for merchant",

@@ -29,7 +29,7 @@ services:
     restart: unless-stopped
 
   # ==========================================
-  # KOTMAN CORE API SERVER
+  # KAUGHTMAN CORE API SERVER
   # ==========================================
   api:
     build:
@@ -42,7 +42,7 @@ services:
       - REDIS_URL=redis://redis:6379
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      - KOTMAN_GLOBAL_PEPPER=K0tm@n_TrU$t_N3tw0rk_P3pp3r_2026_!xZ9
+      - KAUGHTMAN_GLOBAL_PEPPER=K0tm@n_TrU$t_N3tw0rk_P3pp3r_2026_!xZ9
       - SHOPIFY_API_SECRET=dummy
     depends_on:
       - postgres
@@ -50,7 +50,7 @@ services:
     restart: unless-stopped
 
   # ==========================================
-  # KOTMAN CORE BACKGROUND WORKER
+  # KAUGHTMAN CORE BACKGROUND WORKER
   # ==========================================
   worker:
     build:
@@ -61,8 +61,8 @@ services:
       - REDIS_URL=redis://redis:6379
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      - KOTMAN_GLOBAL_PEPPER=K0tm@n_TrU$t_N3tw0rk_P3pp3r_2026_!xZ9
-      - KOTMAN_MASTER_TWILIO_KEY=dummy
+      - KAUGHTMAN_GLOBAL_PEPPER=K0tm@n_TrU$t_N3tw0rk_P3pp3r_2026_!xZ9
+      - KAUGHTMAN_MASTER_TWILIO_KEY=dummy
     depends_on:
       - postgres
       - redis
