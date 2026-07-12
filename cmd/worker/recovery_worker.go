@@ -355,9 +355,13 @@ func (w *RecoveryWorker) executeRouting(
 		slog.Error("Tier 2 WhatsApp send failed — falling through to Tier 3", "error", err)
 	}
 
-	// TIER 3: Kaughtman managed postpaid messaging
-	const messageCostPaise = 100
-	slog.Info("routing via Kaughtman managed postpaid messaging", "merchant_id", settings.MerchantID)
+	// TIER 3: Kaughtman managed messaging (Included in CRM Upsell subscription)
+	if !merchant.HasCRMUpsellEngine {
+		slog.Warn("Tier 3 direct messaging skipped — merchant does not have CRM Upsell subscription", "merchant_id", merchant.ID)
+		return
+	}
+
+	slog.Info("routing via Kaughtman managed messaging", "merchant_id", settings.MerchantID)
 
 	masterKey := os.Getenv("KAUGHTMAN_MASTER_TWILIO_KEY")
 	if masterKey == "" {
@@ -368,20 +372,7 @@ func (w *RecoveryWorker) executeRouting(
 	err := w.sendWhatsApp(ctx, rawPhone, phoneHash, event.Template, event.DiscountValue,
 		masterKey, "twilio", merchant.StoreName, orderValue)
 	if err == nil {
-		// Increment the billing accumulator for the current month postpaid
-		month := time.Now().Format("2006-01")
-		var accumulator domain.MerchantBillingAccumulator
-		_ = w.pg.Where("merchant_id = ? AND billing_month = ?", settings.MerchantID, month).
-			FirstOrCreate(&accumulator, domain.MerchantBillingAccumulator{
-				MerchantID:   settings.MerchantID,
-				BillingMonth: month,
-			}).Error
-
-		w.pg.Model(&domain.MerchantBillingAccumulator{}).
-			Where("merchant_id = ? AND billing_month = ?", settings.MerchantID, month).
-			Updates(map[string]interface{}{
-				"total_fee_paise": gorm.Expr("total_fee_paise + ?", messageCostPaise),
-			})
+		slog.Info("Tier 3 WhatsApp send successful (included in subscription)", "merchant_id", settings.MerchantID)
 		return
 	}
 	slog.Error("Tier 3 WhatsApp send failed", "error", err)
