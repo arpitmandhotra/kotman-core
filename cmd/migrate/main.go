@@ -89,6 +89,26 @@ func main() {
 		log.Fatalf("❌ Failed to migrate MerchantBillingAccumulator: %v", err)
 	}
 
+	log.Println("📦 Syncing domain.Order schema...")
+	if err := db.AutoMigrate(&domain.Order{}); err != nil {
+		log.Fatalf("❌ Failed to migrate Order: %v", err)
+	}
+
+	log.Println("📦 Syncing domain.NDRFulfillmentLog schema...")
+	if err := db.AutoMigrate(&domain.NDRFulfillmentLog{}); err != nil {
+		log.Fatalf("❌ Failed to migrate NDRFulfillmentLog: %v", err)
+	}
+
+	log.Println("📦 Syncing domain.ProductCatalog schema...")
+	if err := db.AutoMigrate(&domain.ProductCatalog{}); err != nil {
+		log.Fatalf("❌ Failed to migrate ProductCatalog: %v", err)
+	}
+
+	log.Println("📦 Syncing domain.OrderLineItem schema...")
+	if err := db.AutoMigrate(&domain.OrderLineItem{}); err != nil {
+		log.Fatalf("❌ Failed to migrate OrderLineItem: %v", err)
+	}
+
 	// Phase 2 cache table — lives in public schema alongside billable_events
 	log.Println("📦 Syncing classification.ProductCategoryCache schema...")
 	if err := db.AutoMigrate(&classification.ProductCategoryCache{}); err != nil {

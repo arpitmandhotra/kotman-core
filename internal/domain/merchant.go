@@ -143,6 +143,7 @@ type PlatformCredential struct {
     ConsumerKeyEncrypted    string `gorm:"type:text"` // WooCommerce consumer key (encrypted)
     ConsumerSecretEncrypted string `gorm:"type:text"` // WooCommerce consumer secret (encrypted)
     IntegrationTokenEncrypted string `gorm:"type:text"` // Magento integration token (encrypted)
+    WebhookSecretEncrypted    string `gorm:"type:text;default:''"` // Carrier/platform webhook secret (encrypted)
 
     Scopes          string    `gorm:"type:text"` // comma-separated granted scopes
     TokenExpiresAt  *time.Time `gorm:"index"` // CRITICAL for Shopify — 60 minute expiry
