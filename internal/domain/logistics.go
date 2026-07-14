@@ -3,29 +3,67 @@ package domain
 import (
 	"time"
 
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
-type Order struct {
-	gorm.Model
-	MerchantID       string    `gorm:"index;not null"`
-	PlatformOrderID  string    `gorm:"index;not null"` // e.g. Shopify order ID
-	OrderNumber      string    `gorm:"index;not null"` // human readable e.g. #1001
-	TrackingAWB      string    `gorm:"index;default:''"`
-	CarrierName      string    `gorm:"default:''"`
-	DeliveryStatus   string    `gorm:"default:''"` // e.g. "SHIPPED", "NDR_undelivered", "DELIVERED"
-	NDRAttempts      int       `gorm:"default:0"`
-	TotalAmountPaise int       `gorm:"not null"`
-	CreatedAt        time.Time `gorm:"index"`
+type CourierProvider string
+
+const (
+	ProviderDelhivery  CourierProvider = "DELHIVERY"
+	ProviderShiprocket CourierProvider = "SHIPROCKET"
+	ProviderXpressbees CourierProvider = "XPRESSBEES"
+	ProviderBluedart   CourierProvider = "BLUEDART"
+	ProviderClickpost  CourierProvider = "CLICKPOST"
+)
+
+type DeliveryEventType string
+
+const (
+	EventNDRAttempted DeliveryEventType = "NDR_ATTEMPTED"
+	EventNDRResolved  DeliveryEventType = "NDR_RESOLVED"
+	EventRTOInitiated DeliveryEventType = "RTO_INITIATED"
+	EventRTODelivered DeliveryEventType = "RTO_DELIVERED"
+	EventDelivered    DeliveryEventType = "DELIVERED"
+	EventInTransit    DeliveryEventType = "IN_TRANSIT"
+)
+
+type InternalReasonCode string
+
+const (
+	ReasonCustomerRefused     InternalReasonCode = "CUSTOMER_REFUSED"
+	ReasonCustomerUnavailable InternalReasonCode = "CUSTOMER_UNAVAILABLE"
+	ReasonAddressIncorrect    InternalReasonCode = "ADDRESS_INCORRECT"
+	ReasonCODNotReady         InternalReasonCode = "COD_NOT_READY"
+	ReasonDeliveryDelayed     InternalReasonCode = "DELIVERY_DELAYED"
+	ReasonUnknown             InternalReasonCode = "UNKNOWN"
+)
+
+type NormalizedDeliveryEvent struct {
+	ID                  uuid.UUID          `gorm:"type:uuid;primaryKey" json:"id"`
+	MerchantID          uuid.UUID          `gorm:"type:uuid;index;not null" json:"merchant_id"`
+	OrderID             uuid.UUID          `gorm:"type:uuid;index;not null" json:"order_id"`
+	AWB                 string             `gorm:"index;not null" json:"awb"`
+	CourierProvider     CourierProvider    `gorm:"not null" json:"courier_provider"`
+	EventType           DeliveryEventType  `gorm:"not null" json:"event_type"`
+	AttemptNumber       int                `gorm:"default:1" json:"attempt_number"`
+	ReasonCode          InternalReasonCode `gorm:"default:'UNKNOWN'" json:"reason_code"`
+	CourierTimestamp    time.Time          `gorm:"index;not null" json:"courier_timestamp"`
+	ReceivedAt          time.Time          `gorm:"not null" json:"received_at"`
+	RawPayloadEncrypted []byte             `gorm:"type:bytea" json:"raw_payload_encrypted"`
 }
 
-type NDRFulfillmentLog struct {
-	gorm.Model
-	TrackingAWB     string    `gorm:"index;not null"`
-	CarrierName     string    `gorm:"not null"`
-	InternalOrderID string    `gorm:"index;not null"`
-	StatusCode      string    `gorm:"not null"`
-	NDRReason       string    `gorm:"type:text"`
-	AttemptCount    int       `gorm:"default:0"`
-	EventTimestamp  time.Time `gorm:"not null"`
+type AWBMapping struct {
+	AWB        string          `gorm:"primaryKey" json:"awb"`
+	MerchantID uuid.UUID       `gorm:"type:uuid;index;not null" json:"merchant_id"`
+	OrderID    uuid.UUID       `gorm:"type:uuid;index;not null" json:"order_id"`
+	Provider   CourierProvider `gorm:"not null" json:"provider"`
+	CreatedAt  time.Time       `gorm:"index" json:"created_at"`
+}
+
+type ProcessedWebhookEvent struct {
+	ID        uint           `gorm:"primaryKey"`
+	EventHash string         `gorm:"uniqueIndex;not null"`
+	CreatedAt time.Time      `gorm:"index"`
+	DeletedAt gorm.DeletedAt `gorm:"index"`
 }

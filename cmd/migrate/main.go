@@ -89,19 +89,29 @@ func main() {
 		log.Fatalf("❌ Failed to migrate MerchantBillingAccumulator: %v", err)
 	}
 
+	log.Println("📦 Syncing domain.AWBMapping schema...")
+	if err := db.AutoMigrate(&domain.AWBMapping{}); err != nil {
+		log.Fatalf("❌ Failed to migrate AWBMapping: %v", err)
+	}
+
+	log.Println("📦 Syncing domain.NormalizedDeliveryEvent schema...")
+	if err := db.AutoMigrate(&domain.NormalizedDeliveryEvent{}); err != nil {
+		log.Fatalf("❌ Failed to migrate NormalizedDeliveryEvent: %v", err)
+	}
+
+	log.Println("📦 Syncing domain.ProcessedWebhookEvent schema...")
+	if err := db.AutoMigrate(&domain.ProcessedWebhookEvent{}); err != nil {
+		log.Fatalf("❌ Failed to migrate ProcessedWebhookEvent: %v", err)
+	}
+
+	log.Println("📦 Syncing domain.CatalogProduct schema...")
+	if err := db.AutoMigrate(&domain.CatalogProduct{}); err != nil {
+		log.Fatalf("❌ Failed to migrate CatalogProduct: %v", err)
+	}
+
 	log.Println("📦 Syncing domain.Order schema...")
 	if err := db.AutoMigrate(&domain.Order{}); err != nil {
 		log.Fatalf("❌ Failed to migrate Order: %v", err)
-	}
-
-	log.Println("📦 Syncing domain.NDRFulfillmentLog schema...")
-	if err := db.AutoMigrate(&domain.NDRFulfillmentLog{}); err != nil {
-		log.Fatalf("❌ Failed to migrate NDRFulfillmentLog: %v", err)
-	}
-
-	log.Println("📦 Syncing domain.ProductCatalog schema...")
-	if err := db.AutoMigrate(&domain.ProductCatalog{}); err != nil {
-		log.Fatalf("❌ Failed to migrate ProductCatalog: %v", err)
 	}
 
 	log.Println("📦 Syncing domain.OrderLineItem schema...")

@@ -99,3 +99,10 @@ func ValidateHMAC(body []byte, expectedHmac string, secret []byte) bool {
 
 	return subtle.ConstantTimeCompare(computedBytes, expectedBytes) == 1
 }
+
+// EncryptHMAC computes the base64-encoded HMAC-SHA256 signature of a request body.
+func EncryptHMAC(body []byte, secret []byte) string {
+	mac := hmac.New(sha256.New, secret)
+	_, _ = mac.Write(body)
+	return base64.StdEncoding.EncodeToString(mac.Sum(nil))
+}
