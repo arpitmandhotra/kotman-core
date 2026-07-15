@@ -194,14 +194,14 @@ func TestComputeFeeAndTiers(t *testing.T) {
 		{50000, 500},
 		{50001, 750},
 		{100000, 750},
-		{100001, 1000},
-		{200000, 1000},
+		{100001, 1500},
+		{200000, 1500},
 		{200001, 2000},
 		{300000, 2000},
-		{300001, 3000},
-		{400000, 3000},
-		{400001, 4000},
-		{500000, 4000},
+		{300001, 2500},
+		{400000, 2500},
+		{400001, 3000},
+		{500000, 3000},
 		{500001, 5000},
 		{1000000, 5000},
 		{1000001, 10000},
@@ -221,7 +221,7 @@ func TestComputeFeeAndTiers(t *testing.T) {
 
 	// Third-party checkout COD order -> billable, tiered fee
 	isB, fee = ComputeFee("third_party", "cod", 150000)
-	if !isB || fee != 1000 {
-		t.Errorf("Expected third-party COD to be billable with 1000 paise fee, got: isBillable=%t, fee=%d", isB, fee)
+	if !isB || fee != 1500 {
+		t.Errorf("Expected third-party COD to be billable with 1500 paise fee, got: isBillable=%t, fee=%d", isB, fee)
 	}
 }
