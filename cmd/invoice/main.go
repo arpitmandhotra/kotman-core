@@ -124,12 +124,19 @@ func main() {
 					Select("COALESCE(SUM(cost_paise), 0)").
 					Row().Scan(&totalWhatsAppCost)
 
-				if totalWhatsAppCost > 200000 {
-					excessPaise := totalWhatsAppCost - 200000
-					finalFeePaise += int(excessPaise)
-					notesParts = append(notesParts, fmt.Sprintf("WhatsApp Surcharge: ₹%.2f (exceeded ₹2,000 threshold)", float64(excessPaise)/100.0))
-				} else if totalWhatsAppCost > 0 {
-					notesParts = append(notesParts, fmt.Sprintf("WhatsApp cost covered: ₹%.2f", float64(totalWhatsAppCost)/100.0))
+				// WhatsApp surcharge is fully waived if they also have active RTO Engine
+				if merchant.HasRTOEngine {
+					if totalWhatsAppCost > 0 {
+						notesParts = append(notesParts, fmt.Sprintf("WhatsApp cost fully covered & waived (RTO Engine active): ₹%.2f", float64(totalWhatsAppCost)/100.0))
+					}
+				} else {
+					if totalWhatsAppCost > 200000 {
+						excessPaise := totalWhatsAppCost - 200000
+						finalFeePaise += int(excessPaise)
+						notesParts = append(notesParts, fmt.Sprintf("WhatsApp Surcharge: ₹%.2f (exceeded ₹2,000 threshold)", float64(excessPaise)/100.0))
+					} else if totalWhatsAppCost > 0 {
+						notesParts = append(notesParts, fmt.Sprintf("WhatsApp cost covered: ₹%.2f", float64(totalWhatsAppCost)/100.0))
+					}
 				}
 			}
 
