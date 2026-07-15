@@ -109,6 +109,16 @@ func main() {
 		log.Fatalf("❌ Failed to migrate WhatsAppMessageLog: %v", err)
 	}
 
+	log.Println("📦 Syncing domain.MerchantScore schema...")
+	if err := db.AutoMigrate(&domain.MerchantScore{}); err != nil {
+		log.Fatalf("❌ Failed to migrate MerchantScore: %v", err)
+	}
+
+	log.Println("📦 Syncing domain.ScoreComponent schema...")
+	if err := db.AutoMigrate(&domain.ScoreComponent{}); err != nil {
+		log.Fatalf("❌ Failed to migrate ScoreComponent: %v", err)
+	}
+
 	log.Println("📦 Syncing domain.CatalogProduct schema...")
 	if err := db.AutoMigrate(&domain.CatalogProduct{}); err != nil {
 		log.Fatalf("❌ Failed to migrate CatalogProduct: %v", err)
