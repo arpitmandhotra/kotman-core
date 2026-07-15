@@ -62,6 +62,7 @@ func main() {
 	analyticsHandler := handlers.NewAnalyticsHandler(postgresClient, redisClient)
 	onboardingHandler := handlers.NewOnboardingHandler(postgresClient)
 	billingHandler := handlers.NewBillingHandler(postgresClient, redisClient)
+	scoreHandler := handlers.NewScoreHandler(postgresClient)
 
 	// ==========================================
 	// 3. THE ROUTER & MIDDLEWARE LAYER
@@ -169,6 +170,20 @@ func main() {
 	app.Get("/v1/merchants/insights",
 		middleware.RequireAPIKey(postgresClient, redisClient),
 		analyticsHandler.GetMerchantInsights,
+	)
+
+	// Score API Endpoints
+	app.Get("/v1/merchants/:id/scores",
+		middleware.RequireAPIKey(postgresClient, redisClient),
+		scoreHandler.GetMerchantScores,
+	)
+	app.Get("/v1/merchants/:id/scores/:type",
+		middleware.RequireAPIKey(postgresClient, redisClient),
+		scoreHandler.GetMerchantScoreByType,
+	)
+	app.Get("/v1/merchants/:id/scores/:type/history",
+		middleware.RequireAPIKey(postgresClient, redisClient),
+		scoreHandler.GetMerchantScoreHistory,
 	)
 
 	// Razorpay Billing Integration

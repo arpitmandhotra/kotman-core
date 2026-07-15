@@ -54,6 +54,8 @@ func NewPostgresClient() *gorm.DB {
 		&domain.OrderAudit{},
 		&domain.MerchantSubscription{},
 		&domain.WhatsAppMessageLog{},
+		&domain.MerchantScore{},
+		&domain.ScoreComponent{},
 		&domain.AWBMapping{},
 		&domain.NormalizedDeliveryEvent{},
 		&domain.ProcessedWebhookEvent{},
