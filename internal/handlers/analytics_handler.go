@@ -382,6 +382,59 @@ func (h *AnalyticsHandler) computeCrossNetworkAnalytics(ctx context.Context, mer
 		return result, nil
 	}
 
+	// Always compute SpendBandDistribution (unlocked under Free Tier)
+	type bandRow struct {
+		Band string
+		Cnt  int
+	}
+	var bandRows []bandRow
+	h.pg.WithContext(ctx).Raw(`
+		SELECT
+			CASE
+				WHEN avg_cart < 50000  THEN 'low'
+				WHEN avg_cart < 200000 THEN 'mid'
+				WHEN avg_cart < 500000 THEN 'high'
+				ELSE 'premium'
+			END AS band,
+			COUNT(*) AS cnt
+		FROM (
+			SELECT phone_hash, AVG(order_value_paise) AS avg_cart
+			FROM billable_events
+			WHERE merchant_id = ? AND order_value_paise > 0
+			GROUP BY phone_hash
+		) sub
+		GROUP BY band
+	`, merchantID).Scan(&bandRows)
+
+	var totalBuyers int
+	for _, b := range bandRows {
+		totalBuyers += b.Cnt
+	}
+	sbd := domain.SpendBandBreakdown{}
+	for _, b := range bandRows {
+		pct := 0.0
+		if totalBuyers > 0 {
+			pct = float64(b.Cnt) / float64(totalBuyers)
+		}
+		switch b.Band {
+		case "low":
+			sbd.LowPct = pct
+		case "mid":
+			sbd.MidPct = pct
+		case "high":
+			sbd.HighPct = pct
+		case "premium":
+			sbd.PremiumPct = pct
+		}
+	}
+	result.SpendBandDistribution = sbd
+
+	// If the merchant does not have fullAccess (paid Growth Tier / active trial), exit early
+	if !fullAccess {
+		result.IsTeaserOnly = true
+		return result, nil
+	}
+
 	// --- Network-wide cart value stats (from BillableEvent across ALL merchants) ---
 	type netStats struct {
 		AvgCart    float64
@@ -425,7 +478,6 @@ func (h *AnalyticsHandler) computeCrossNetworkAnalytics(ctx context.Context, mer
 	result.NetworkTop10PctAvgMonthlyINR = top10.AvgCart * 1.8
 
 	// --- This merchant's spending percentile ---
-	// What % of all phone hashes have a LOWER avg cart than this merchant's avg buyer
 	var merchantAvgCart float64
 	h.pg.WithContext(ctx).Raw(`
 		SELECT AVG(order_value_paise) / 100.0
@@ -439,7 +491,7 @@ func (h *AnalyticsHandler) computeCrossNetworkAnalytics(ctx context.Context, mer
 			FROM billable_events WHERE order_value_paise > 0
 			GROUP BY phone_hash
 		) sub WHERE avg_cart < ?
-	`, merchantAvgCart*100).Scan(&belowCount) // merchantAvgCart is INR; sub is paise
+	`, merchantAvgCart*100).Scan(&belowCount)
 
 	if totalNetworkBuyers > 0 {
 		result.MerchantSpendingPercentile = (float64(belowCount) / float64(totalNetworkBuyers)) * 100.0
@@ -467,7 +519,7 @@ func (h *AnalyticsHandler) computeCrossNetworkAnalytics(ctx context.Context, mer
 	}
 
 	// Avg monthly spend of overlapping buyers across the full network
-	if overlap.OverlapCount >= 50 { // DPDP cohort floor
+	if overlap.OverlapCount >= 50 {
 		result.NetworkCohortSufficient = true
 		var overlapStats struct {
 			AvgCart float64
@@ -484,56 +536,6 @@ func (h *AnalyticsHandler) computeCrossNetworkAnalytics(ctx context.Context, mer
 		result.OverlapBuyersAvgMonthlyINR = overlapStats.AvgCart * 1.5
 	} else {
 		result.NetworkCohortSufficient = false
-	}
-
-	// --- Spend band distribution for this merchant's buyers vs network bands ---
-	// Bands based on network cart values, applied to this merchant's buyers
-	if fullAccess {
-		type bandRow struct {
-			Band string
-			Cnt  int
-		}
-		var bandRows []bandRow
-		h.pg.WithContext(ctx).Raw(`
-			SELECT
-				CASE
-					WHEN avg_cart < 50000  THEN 'low'
-					WHEN avg_cart < 200000 THEN 'mid'
-					WHEN avg_cart < 500000 THEN 'high'
-					ELSE 'premium'
-				END AS band,
-				COUNT(*) AS cnt
-			FROM (
-				SELECT phone_hash, AVG(order_value_paise) AS avg_cart
-				FROM billable_events
-				WHERE merchant_id = ? AND order_value_paise > 0
-				GROUP BY phone_hash
-			) sub
-			GROUP BY band
-		`, merchantID).Scan(&bandRows)
-
-		var totalBuyers int
-		for _, b := range bandRows {
-			totalBuyers += b.Cnt
-		}
-		sbd := domain.SpendBandBreakdown{}
-		for _, b := range bandRows {
-			pct := 0.0
-			if totalBuyers > 0 {
-				pct = float64(b.Cnt) / float64(totalBuyers)
-			}
-			switch b.Band {
-			case "low":
-				sbd.LowPct = pct
-			case "mid":
-				sbd.MidPct = pct
-			case "high":
-				sbd.HighPct = pct
-			case "premium":
-				sbd.PremiumPct = pct
-			}
-		}
-		result.SpendBandDistribution = sbd
 	}
 
 	// --- Network-wide RTO and refund rates ---

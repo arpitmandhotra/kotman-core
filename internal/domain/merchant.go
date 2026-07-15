@@ -43,7 +43,7 @@ type Merchant struct {
 // CrossNetworkActive returns true if the merchant has access to cross-network intelligence.
 // Free for lifetime under the new pricing architecture.
 func (m *Merchant) CrossNetworkActive() bool {
-	return true
+	return m.HasPaidSubscription || time.Now().Before(m.CreatedAt.AddDate(0, 0, 30))
 }
 
 // CRMUpsellActive returns true if the merchant has access to the CRM Upsell/Recovery module.
