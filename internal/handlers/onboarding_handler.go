@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"log/slog"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/arpitmandhotra/api-integrator/internal/crypto"
@@ -70,6 +71,7 @@ func (h *OnboardingHandler) RegisterMerchant(c *fiber.Ctx) error {
 		APIKeyHash:       hashedKey,
 		IsActive:         false, // enforces Shadow Mode natively
 		ShadowModeEndsAt: time.Now().Add(35 * 24 * time.Hour),
+		Tier:             domain.TierFree,
 	}
 
 	if err := h.pg.WithContext(c.UserContext()).Create(&merchant).Error; err != nil {
@@ -80,8 +82,6 @@ func (h *OnboardingHandler) RegisterMerchant(c *fiber.Ctx) error {
 		})
 	}
 
-	// M21 FIX: Read base URL from env so merchants don't get a hardcoded
-	// placeholder that points to an unclaimed domain.
 	apiBase := os.Getenv("KAUGHTMAN_API_BASE_URL")
 	if apiBase == "" {
 		apiBase = "https://api.yourdomain.com" // only reached in local dev
@@ -92,4 +92,126 @@ func (h *OnboardingHandler) RegisterMerchant(c *fiber.Ctx) error {
 	}
 
 	return c.Status(fiber.StatusCreated).JSON(response)
+}
+
+type UpdateSettingsRequest struct {
+	MetaPixelID        *string `json:"meta_pixel_id"`
+	MetaAccessToken    *string `json:"meta_access_token"`
+	MetaAdAccountID    *string `json:"meta_ad_account_id"`
+	MetaTestEventCode  *string `json:"meta_test_event_code"`
+	MetaCAPIEnabled    *bool   `json:"meta_capi_enabled"`
+	CapiDatasetID      *string `json:"capi_dataset_id"`
+}
+
+// UpdateSettings updates the merchant configuration settings (CAPI, wallet, etc.)
+// Route: PATCH /v1/merchants/settings
+func (h *OnboardingHandler) UpdateSettings(c *fiber.Ctx) error {
+	merchantIDVal := c.Locals("kaughtman.merchant_id")
+	merchantID, ok := merchantIDVal.(string)
+	if !ok || merchantID == "" {
+		return c.Status(401).JSON(fiber.Map{"success": false, "error": "unauthorized"})
+	}
+
+	var req UpdateSettingsRequest
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(400).JSON(fiber.Map{"success": false, "error": "invalid body"})
+	}
+
+	ctx := c.UserContext()
+	var merchant domain.Merchant
+	if err := h.pg.WithContext(ctx).Where("id = ?", merchantID).First(&merchant).Error; err != nil {
+		return c.Status(404).JSON(fiber.Map{"success": false, "error": "merchant not found"})
+	}
+
+	// Field validation
+	errors := fiber.Map{}
+	if req.MetaPixelID != nil && *req.MetaPixelID != "" {
+		isNumeric := true
+		for _, r := range *req.MetaPixelID {
+			if r < '0' || r > '9' {
+				isNumeric = false
+				break
+			}
+		}
+		if !isNumeric {
+			errors["meta_pixel_id"] = "Meta Pixel ID must be numeric"
+		}
+	}
+
+	if req.MetaAccessToken != nil && *req.MetaAccessToken != "" {
+		if !strings.HasPrefix(*req.MetaAccessToken, "EAAG") {
+			errors["meta_access_token"] = "Meta Access Token must start with 'EAAG'"
+		}
+	}
+
+	if req.MetaAdAccountID != nil && *req.MetaAdAccountID != "" {
+		if !strings.HasPrefix(*req.MetaAdAccountID, "act_") {
+			errors["meta_ad_account_id"] = "Meta Ad Account ID must start with 'act_'"
+		}
+	}
+
+	if len(errors) > 0 {
+		return c.Status(400).JSON(fiber.Map{
+			"success": false,
+			"errors":  errors,
+		})
+	}
+
+	// Load or create MerchantSettings
+	var settings domain.MerchantSettings
+	err := h.pg.WithContext(ctx).Where("merchant_id = ?", merchantID).First(&settings).Error
+	if err != nil {
+		if gorm.ErrRecordNotFound == err {
+			settings = domain.MerchantSettings{MerchantID: merchantID}
+			if createErr := h.pg.WithContext(ctx).Create(&settings).Error; createErr != nil {
+				return c.Status(500).JSON(fiber.Map{"success": false, "error": "failed to initialize settings"})
+			}
+		} else {
+			return c.Status(500).JSON(fiber.Map{"success": false, "error": "database error"})
+		}
+	}
+
+	// Gate MetaCAPIEnabled on Growth + Ads plan
+	if req.MetaCAPIEnabled != nil && *req.MetaCAPIEnabled {
+		if merchant.Tier != domain.TierGrowthAds {
+			return c.Status(403).JSON(fiber.Map{
+				"error":         "Meta CAPI enrichment requires the Growth + Ads plan",
+				"tier_required": "growth_ads",
+			})
+		}
+	}
+
+	// Apply updates
+	updates := map[string]interface{}{}
+	if req.MetaPixelID != nil {
+		updates["meta_pixel_id"] = *req.MetaPixelID
+	}
+	if req.MetaAccessToken != nil {
+		updates["meta_access_token"] = *req.MetaAccessToken
+	}
+	if req.MetaAdAccountID != nil {
+		updates["meta_ad_account_id"] = *req.MetaAdAccountID
+	}
+	if req.MetaTestEventCode != nil {
+		updates["meta_test_event_code"] = *req.MetaTestEventCode
+	}
+	if req.MetaCAPIEnabled != nil {
+		updates["meta_capi_enabled"] = *req.MetaCAPIEnabled
+	}
+	if req.CapiDatasetID != nil {
+		updates["capi_dataset_id"] = *req.CapiDatasetID
+	}
+
+	if len(updates) > 0 {
+		if err := h.pg.WithContext(ctx).Model(&settings).Updates(updates).Error; err != nil {
+			slog.Error("failed to update merchant settings", "merchant_id", merchantID, "error", err)
+			return c.Status(500).JSON(fiber.Map{"success": false, "error": "failed to save settings"})
+		}
+	}
+
+	return c.JSON(fiber.Map{
+		"success": true,
+		"message": "Settings updated successfully",
+		"settings": settings,
+	})
 }

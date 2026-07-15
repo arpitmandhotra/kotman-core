@@ -6,6 +6,13 @@ import (
 	"gorm.io/gorm"
 )
 
+const (
+	GrowthMonthlyPaise        = 699900
+	GrowthAdsMonthlyPaise     = 899900
+	WhatsAppMonthlyCapPaise   = 200000
+	CAPIStandaloneValuePaise  = 299900
+)
+
 type BillableEvent struct {
 	gorm.Model
 	MerchantID      string     `gorm:"uniqueIndex:idx_merchant_platform_order;not null"`

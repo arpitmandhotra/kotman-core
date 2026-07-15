@@ -2,12 +2,9 @@ package handlers
 
 import (
 	"log/slog"
-	"os"
-	"strconv"
 	"strings"
 	"time"
 
-	"github.com/arpitmandhotra/api-integrator/internal/billing"
 	"github.com/arpitmandhotra/api-integrator/internal/domain"
 	"github.com/gofiber/fiber/v2"
 	"github.com/redis/go-redis/v9"
@@ -106,113 +103,185 @@ func (h *BillingHandler) PurchaseModule(c *fiber.Ctx) error {
 		})
 	}
 
-	var merchant domain.Merchant
-	if err := h.pg.WithContext(c.UserContext()).Where("id = ?", merchantID).First(&merchant).Error; err != nil {
-		return c.Status(404).JSON(fiber.Map{"success": false, "error": "merchant not found"})
-	}
-
-	// Upfront subscription payment of ₹4,999/month for flat-fee modules
-	const modulePriceINR = 4999
-	amountPaise := int64(modulePriceINR * 100)
-
-	keyID := os.Getenv("RAZORPAY_KEY_ID")
-	keySecret := os.Getenv("RAZORPAY_KEY_SECRET")
-	if keyID == "" || keySecret == "" {
-		return c.Status(500).JSON(fiber.Map{"success": false, "error": "billing unavailable"})
-	}
-
-	orderID, err := billing.CreateRazorpayOrder(amountPaise, keyID, keySecret)
-	if err != nil {
-		slog.Error("failed to create Razorpay order for module", "module", moduleName, "error", err)
-		return c.Status(500).JSON(fiber.Map{"success": false, "error": "failed to create payment order"})
-	}
-
-	cacheKey := "module_purchase:" + orderID
-	cacheVal := moduleName + ":" + strconv.Itoa(modulePriceINR)
-	h.rdb.Set(c.UserContext(), cacheKey, cacheVal, 30*time.Minute)
-
-	return c.Status(201).JSON(fiber.Map{
+	return c.JSON(fiber.Map{
 		"success":           true,
-		"razorpay_order_id": orderID,
+		"razorpay_order_id": "free_tier_no_charge",
 		"module":            moduleName,
-		"amount_inr":        modulePriceINR,
+		"amount_inr":        0,
+		"message":           "This module is now free and included in the default tier",
 	})
 }
 
-// VerifyModulePurchase validates payment and activates the purchased module.
-// Route: POST /v1/billing/module/verify
-// Body: { "razorpay_order_id", "razorpay_payment_id", "razorpay_signature" }
+// VerifyModulePurchase validates payment and activates the purchased module. (No-op backward compatibility)
 func (h *BillingHandler) VerifyModulePurchase(c *fiber.Ctx) error {
+	var req VerifyRequest
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(400).JSON(fiber.Map{"success": false, "error": "invalid body"})
+	}
+
+	return c.JSON(fiber.Map{
+		"success": true,
+		"module":  domain.ModuleUnifiedPaid,
+		"message": "Module purchased and activated successfully",
+	})
+}
+
+// ActivateSubscription activates a postpaid growth or growth_ads subscription tier
+// Route: POST /v1/billing/subscription/activate
+// Body: { "plan": "growth" | "growth_ads" }
+func (h *BillingHandler) ActivateSubscription(c *fiber.Ctx) error {
 	merchantIDVal := c.Locals("kaughtman.merchant_id")
 	merchantID, ok := merchantIDVal.(string)
 	if !ok || merchantID == "" {
 		return c.Status(401).JSON(fiber.Map{"success": false, "error": "unauthorized"})
 	}
 
-	var req VerifyRequest
+	var req struct {
+		Plan string `json:"plan"`
+	}
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(400).JSON(fiber.Map{"success": false, "error": "invalid body"})
 	}
 
-	keySecret := os.Getenv("RAZORPAY_KEY_SECRET")
-	if !billing.VerifyRazorpaySignature(req.OrderID, req.PaymentID, req.Signature, keySecret) {
-		return c.Status(401).JSON(fiber.Map{"success": false, "error": "signature verification failed"})
+	plan := domain.MerchantTier(strings.ToLower(req.Plan))
+	if plan != domain.TierGrowth && plan != domain.TierGrowthAds {
+		return c.Status(400).JSON(fiber.Map{"success": false, "error": "invalid plan. must be 'growth' or 'growth_ads'"})
 	}
-
-	cacheKey := "module_purchase:" + req.OrderID
-	cacheVal, err := h.rdb.Get(c.UserContext(), cacheKey).Result()
-	if err != nil {
-		return c.Status(400).JSON(fiber.Map{"success": false, "error": "payment session expired or not found"})
-	}
-
-	parts := strings.SplitN(cacheVal, ":", 2)
-	if len(parts) != 2 {
-		return c.Status(500).JSON(fiber.Map{"success": false, "error": "invalid session data"})
-	}
-	moduleName := parts[0]
 
 	var merchant domain.Merchant
 	if err := h.pg.WithContext(c.UserContext()).Where("id = ?", merchantID).First(&merchant).Error; err != nil {
 		return c.Status(404).JSON(fiber.Map{"success": false, "error": "merchant not found"})
 	}
 
+	// Validate merchant is currently on free tier
+	if merchant.Tier != "" && merchant.Tier != domain.TierFree {
+		return c.Status(400).JSON(fiber.Map{"success": false, "error": "merchant is already on an active plan"})
+	}
+
 	now := time.Now()
-	renewsAt := now.AddDate(0, 1, 0) // monthly renewal date
+	// Subscription renews at first day of next calendar month (postpaid)
+	renewsAt := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location()).AddDate(0, 1, 0)
 
-	err = h.pg.WithContext(c.UserContext()).Transaction(func(tx *gorm.DB) error {
-		sub := domain.MerchantSubscription{
-			MerchantID:          merchantID,
-			Module:              moduleName,
-			Status:              "active",
-			PriceINR:            4999,
-			RazorpayOrderID:     req.OrderID,
-			CurrentPeriodStart:  &now,
-			CurrentPeriodEnd:    &renewsAt,
-		}
-		if err := tx.Where("merchant_id = ? AND module = ?", merchantID, moduleName).
-			Assign(sub).FirstOrCreate(&sub).Error; err != nil {
-			return err
-		}
-
+	err := h.pg.WithContext(c.UserContext()).Transaction(func(tx *gorm.DB) error {
 		updates := map[string]interface{}{
-			"has_paid_subscription":       true,
-			"paid_subscription_renews_at": renewsAt,
+			"tier":                     plan,
+			"subscription_started_at":  &now,
+			"subscription_renews_at":   &renewsAt,
+			"has_paid_subscription":    true,
+			"paid_subscription_sub_id": "sub_" + merchantID[:8],
 		}
 		return tx.Model(&domain.Merchant{}).Where("id = ?", merchantID).Updates(updates).Error
 	})
 
 	if err != nil {
-		slog.Error("failed to activate module", "module", moduleName, "merchant_id", merchantID, "error", err)
-		return c.Status(500).JSON(fiber.Map{"success": false, "error": "failed to activate module"})
+		slog.Error("failed to activate subscription", "merchant_id", merchantID, "error", err)
+		return c.Status(500).JSON(fiber.Map{"success": false, "error": "failed to activate subscription"})
 	}
 
-	h.rdb.Del(c.UserContext(), cacheKey)
+	slog.Info("subscription activated successfully", "merchant_id", merchantID, "plan", plan)
+	return c.JSON(fiber.Map{
+		"success":   true,
+		"tier":      string(plan),
+		"renews_at": renewsAt.Format(time.RFC3339),
+		"message":   "Subscription activated successfully",
+	})
+}
 
-	slog.Info("module purchased and activated in real time", "module", moduleName, "merchant_id", merchantID)
-	
+// UpgradeSubscription upgrades mid-cycle from growth to growth_ads
+// Route: POST /v1/billing/subscription/upgrade
+// Body: { "plan": "growth_ads" }
+func (h *BillingHandler) UpgradeSubscription(c *fiber.Ctx) error {
+	merchantIDVal := c.Locals("kaughtman.merchant_id")
+	merchantID, ok := merchantIDVal.(string)
+	if !ok || merchantID == "" {
+		return c.Status(401).JSON(fiber.Map{"success": false, "error": "unauthorized"})
+	}
+
+	var req struct {
+		Plan string `json:"plan"`
+	}
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(400).JSON(fiber.Map{"success": false, "error": "invalid body"})
+	}
+
+	plan := domain.MerchantTier(strings.ToLower(req.Plan))
+	if plan != domain.TierGrowthAds {
+		return c.Status(400).JSON(fiber.Map{"success": false, "error": "invalid plan. upgrade destination must be 'growth_ads'"})
+	}
+
+	var merchant domain.Merchant
+	if err := h.pg.WithContext(c.UserContext()).Where("id = ?", merchantID).First(&merchant).Error; err != nil {
+		return c.Status(404).JSON(fiber.Map{"success": false, "error": "merchant not found"})
+	}
+
+	// Validate merchant is currently on growth tier
+	if merchant.Tier != domain.TierGrowth {
+		return c.Status(400).JSON(fiber.Map{"success": false, "error": "merchant must be on 'growth' tier to upgrade to 'growth_ads'"})
+	}
+
+	err := h.pg.WithContext(c.UserContext()).Transaction(func(tx *gorm.DB) error {
+		updates := map[string]interface{}{
+			"tier": plan,
+		}
+		return tx.Model(&domain.Merchant{}).Where("id = ?", merchantID).Updates(updates).Error
+	})
+
+	if err != nil {
+		slog.Error("failed to upgrade subscription", "merchant_id", merchantID, "error", err)
+		return c.Status(500).JSON(fiber.Map{"success": false, "error": "failed to upgrade subscription"})
+	}
+
+	slog.Info("merchant upgraded subscription mid-cycle", "merchant_id", merchantID, "from", "growth", "to", "growth_ads", "timestamp", time.Now())
 	return c.JSON(fiber.Map{
 		"success": true,
-		"module":  moduleName,
-		"message": "Module purchased and activated successfully",
+		"tier":    string(plan),
+		"message": "Upgraded to Growth + Ads subscription. New rate Rs. 8,999 will apply from next billing cycle.",
+	})
+}
+
+// CancelSubscription cancels the growth/growth_ads subscription effective at the end of the billing cycle
+// Route: POST /v1/billing/subscription/cancel
+func (h *BillingHandler) CancelSubscription(c *fiber.Ctx) error {
+	merchantIDVal := c.Locals("kaughtman.merchant_id")
+	merchantID, ok := merchantIDVal.(string)
+	if !ok || merchantID == "" {
+		return c.Status(401).JSON(fiber.Map{"success": false, "error": "unauthorized"})
+	}
+
+	var merchant domain.Merchant
+	if err := h.pg.WithContext(c.UserContext()).Where("id = ?", merchantID).First(&merchant).Error; err != nil {
+		return c.Status(404).JSON(fiber.Map{"success": false, "error": "merchant not found"})
+	}
+
+	if merchant.Tier == "" || merchant.Tier == domain.TierFree {
+		return c.Status(400).JSON(fiber.Map{"success": false, "error": "merchant does not have an active subscription"})
+	}
+
+	now := time.Now()
+	// Set renewal date to end of current cycle (first day of next month)
+	renewsAt := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location()).AddDate(0, 1, 0)
+
+	err := h.pg.WithContext(c.UserContext()).Transaction(func(tx *gorm.DB) error {
+		// If merchant is on growth_ads and cancels, immediately stop CAPI dispatch
+		if merchant.Tier == domain.TierGrowthAds {
+			tx.Model(&domain.MerchantSettings{}).Where("merchant_id = ?", merchantID).Update("meta_capi_enabled", false)
+		}
+
+		updates := map[string]interface{}{
+			"subscription_renews_at": &renewsAt,
+			"has_paid_subscription":  false, // will downgrade to free on next invoice cycle
+		}
+		return tx.Model(&domain.Merchant{}).Where("id = ?", merchantID).Updates(updates).Error
+	})
+
+	if err != nil {
+		slog.Error("failed to cancel subscription", "merchant_id", merchantID, "error", err)
+		return c.Status(500).JSON(fiber.Map{"success": false, "error": "failed to cancel subscription"})
+	}
+
+	slog.Info("merchant cancelled subscription", "merchant_id", merchantID, "effective_at", renewsAt)
+	return c.JSON(fiber.Map{
+		"success": true,
+		"message": "Subscription cancelled successfully. Your features will remain active until " + renewsAt.Format("2006-01-02") + ".",
 	})
 }

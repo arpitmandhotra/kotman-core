@@ -544,6 +544,18 @@ func ProcessInboundOrder(ctx context.Context, platform string, merchantID string
 		capiCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
+		var merchant domain.Merchant
+		if err := DB.WithContext(capiCtx).
+			Select("id", "tier").
+			Where("id = ?", eventVal.MerchantID).
+			First(&merchant).Error; err != nil {
+			return
+		}
+
+		if merchant.Tier != domain.TierGrowthAds {
+			return // skip CAPI dispatch entirely
+		}
+
 		var settings domain.MerchantSettings
 		if err := DB.WithContext(capiCtx).
 			Where("merchant_id = ?", eventVal.MerchantID).

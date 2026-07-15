@@ -40,20 +40,22 @@ func RunAudienceSync(pg *gorm.DB) error {
     // 1. PRE-FLIGHT DENSITY CHECK
     var count int64
     err := pg.Model(&domain.MerchantSettings{}).
-        Where("meta_capi_enabled = ? AND meta_ad_account_id != ''", true).
+        Joins("JOIN merchants ON merchants.id::text = merchant_settings.merchant_id").
+        Where("merchants.tier = ? AND merchant_settings.meta_capi_enabled = ? AND merchant_settings.meta_ad_account_id != ''", domain.TierGrowthAds, true).
         Count(&count).Error
     if err != nil {
         return fmt.Errorf("failed to count active Meta configured merchants: %w", err)
     }
 
     if count == 0 {
-        slog.Info("audience_sync: no merchants with Meta configured, skipping")
+        slog.Info("audience_sync: no merchants with Meta configured on growth_ads tier, skipping")
         return nil
     }
 
-    // 2. Fetch all active merchants with Meta CAPI enabled and ad account credentials
+    // 2. Fetch all active merchants with Meta CAPI enabled and ad account credentials on growth_ads tier
     var settingsList []domain.MerchantSettings
-    err = pg.Where("meta_capi_enabled = ? AND meta_ad_account_id != '' AND meta_access_token != ''", true).
+    err = pg.Joins("JOIN merchants ON merchants.id::text = merchant_settings.merchant_id").
+        Where("merchants.tier = ? AND merchant_settings.meta_capi_enabled = ? AND merchant_settings.meta_ad_account_id != '' AND merchant_settings.meta_access_token != ''", domain.TierGrowthAds, true).
         Find(&settingsList).Error
     if err != nil {
         return fmt.Errorf("failed to fetch Meta settings: %w", err)

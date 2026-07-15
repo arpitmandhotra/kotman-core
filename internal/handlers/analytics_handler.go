@@ -145,6 +145,15 @@ func (h *AnalyticsHandler) GetMerchantInsights(c *fiber.Ctx) error {
 	// =====================================================================
 	// ASSEMBLE RESPONSE
 	// =====================================================================
+	var settings domain.MerchantSettings
+	h.pg.WithContext(ctx).Where("merchant_id = ?", merchant.ID).First(&settings)
+
+	tierVal := merchant.Tier
+	if tierVal == "" {
+		tierVal = domain.TierFree
+	}
+	capiEnabled := merchant.Tier == domain.TierGrowthAds && settings.MetaCAPIEnabled && settings.MetaPixelID != "" && settings.MetaAccessToken != ""
+
 	resp := domain.InsightsResponse{
 		ExecutionMode:            executionMode,
 		ShadowDaysRemaining:      shadowDaysRemaining,
@@ -159,12 +168,16 @@ func (h *AnalyticsHandler) GetMerchantInsights(c *fiber.Ctx) error {
 		SimulatedSavingsRangeMin: simSavingsMin,
 		SimulatedSavingsRangeMax: simSavingsMax,
 		HasRTOEngine:             merchant.HasRTOEngine,
-		HasPaidSubscription:      merchant.HasPaidSubscription,
-		HasCrossNetworkIntel:     true, // free for lifetime
-		HasCRMUpsellEngine:       true, // free for lifetime
+		HasPaidSubscription:      domain.IsGrowthOrAbove(merchant.Tier),
+		HasCrossNetworkIntel:     domain.IsGrowthOrAbove(merchant.Tier),
+		HasCRMUpsellEngine:       domain.IsGrowthOrAbove(merchant.Tier),
+		Tier:                     tierVal,
+		CapiEnabled:              capiEnabled,
+		GrowthMonthlyINR:         domain.GrowthMonthlyPaise / 100,
+		GrowthAdsMonthlyINR:      domain.GrowthAdsMonthlyPaise / 100,
 		OwnStore:                 ownStore,
 		CrossNetwork:             crossNetwork,
-		CrossNetworkPaywalled:    false, // free for lifetime, never paywalled
+		CrossNetworkPaywalled:    crossNetworkPaywalled,
 		RTOEngine:                rtoEngine,
 	}
 

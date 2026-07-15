@@ -83,7 +83,7 @@ func main() {
 				return err
 			}
 
-			if !merchant.HasPaidSubscription && !merchant.HasRTOEngine {
+			if (merchant.Tier == "" || merchant.Tier == domain.TierFree) && !merchant.HasRTOEngine {
 				// If on free tier with no active subscription/engine, skip invoicing
 				res := tx.Model(&lockAcc).Update("is_invoiced", true)
 				if res.Error != nil {
@@ -112,12 +112,18 @@ func main() {
 			var finalFeePaise int = 0
 			var notesParts []string
 
-			// 1. Unified Paid Subscription Fee (₹4,999/month + WhatsApp surcharge)
-			if merchant.HasPaidSubscription {
-				finalFeePaise += 499900
-				notesParts = append(notesParts, "Unified Paid Subscription: ₹4,999")
+			// 1. Subscription Fee based on current tier
+			switch merchant.Tier {
+			case domain.TierGrowth:
+				finalFeePaise += domain.GrowthMonthlyPaise // Rs. 6,999
+				notesParts = append(notesParts, "Growth Subscription Fee: ₹6,999")
+			case domain.TierGrowthAds:
+				finalFeePaise += domain.GrowthAdsMonthlyPaise // Rs. 8,999
+				notesParts = append(notesParts, "Growth + Ads Subscription Fee: ₹8,999")
+			}
 
-				// Calculate WhatsApp message surcharge (excess over ₹2,000 / 200,000 paise)
+			// Calculate WhatsApp message surcharge (excess over ₹2,000 / 200,000 paise) for growth tiers
+			if domain.IsGrowthOrAbove(merchant.Tier) {
 				var totalWhatsAppCost int64 = 0
 				tx.Model(&domain.WhatsAppMessageLog{}).
 					Where("merchant_id = ? AND sent_at >= ? AND sent_at <= ?", merchant.ID, billingPeriodStart, billingPeriodEnd).
@@ -130,13 +136,26 @@ func main() {
 						notesParts = append(notesParts, fmt.Sprintf("WhatsApp cost fully covered & waived (RTO Engine active): ₹%.2f", float64(totalWhatsAppCost)/100.0))
 					}
 				} else {
-					if totalWhatsAppCost > 200000 {
-						excessPaise := totalWhatsAppCost - 200000
+					const capPaise = domain.WhatsAppMonthlyCapPaise
+					if totalWhatsAppCost > capPaise {
+						excessPaise := totalWhatsAppCost - capPaise
 						finalFeePaise += int(excessPaise)
 						notesParts = append(notesParts, fmt.Sprintf("WhatsApp Surcharge: ₹%.2f (exceeded ₹2,000 threshold)", float64(excessPaise)/100.0))
 					} else if totalWhatsAppCost > 0 {
 						notesParts = append(notesParts, fmt.Sprintf("WhatsApp cost covered: ₹%.2f", float64(totalWhatsAppCost)/100.0))
 					}
+				}
+
+				// If subscription was cancelled (meaning HasPaidSubscription is false), downgrade to free now at the end of the billing cycle
+				if !merchant.HasPaidSubscription {
+					if err := tx.Model(&merchant).Updates(map[string]interface{}{
+						"tier":                    domain.TierFree,
+						"subscription_renews_at":   nil,
+						"subscription_started_at":  nil,
+					}).Error; err != nil {
+						return err
+					}
+					slog.Info("merchant tier downgraded to free at end of cycle", "merchant_id", merchant.ID)
 				}
 			}
 

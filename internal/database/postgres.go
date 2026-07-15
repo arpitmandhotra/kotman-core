@@ -67,7 +67,24 @@ func NewPostgresClient() *gorm.DB {
 		log.Fatalf("Failed to auto-migrate database schema: %v", err)
 	}
 
-	// Note: Prepaid wallet check constraint was removed in postpaid billing migration.
+	// Configure merchant tier check constraints
+	alterMerchantSQL := `
+		ALTER TABLE merchants ADD COLUMN IF NOT EXISTS tier VARCHAR(30) NOT NULL DEFAULT 'free';
+		ALTER TABLE merchants ADD COLUMN IF NOT EXISTS subscription_started_at TIMESTAMP WITH TIME ZONE;
+		ALTER TABLE merchants ADD COLUMN IF NOT EXISTS subscription_renews_at TIMESTAMP WITH TIME ZONE;
+		ALTER TABLE merchants DROP CONSTRAINT IF EXISTS chk_merchants_tier;
+		ALTER TABLE merchants ADD CONSTRAINT chk_merchants_tier CHECK (tier IN ('free', 'growth', 'growth_ads'));
+	`
+	if err := db.Exec(alterMerchantSQL).Error; err != nil {
+		log.Fatalf("Failed to migrate Merchant tier columns and constraints: %v", err)
+	}
+
+	alterMerchantSettingsSQL := `
+		ALTER TABLE merchant_settings ADD COLUMN IF NOT EXISTS capi_dataset_id VARCHAR(100) NOT NULL DEFAULT '';
+	`
+	if err := db.Exec(alterMerchantSettingsSQL).Error; err != nil {
+		log.Fatalf("Failed to migrate MerchantSettings columns: %v", err)
+	}
 
 	log.Println("--> Successfully connected to PostgreSQL Cold Storage!")
 	log.Println("--> Database Schema Auto-Migrated Successfully")

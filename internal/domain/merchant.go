@@ -21,10 +21,13 @@ type Merchant struct {
 	UpdatedAt time.Time
 
 	// --- SUBSCRIPTION MODULES ---
-	HasRTOEngine             bool       `gorm:"default:false"`
-	HasPaidSubscription      bool       `gorm:"default:false"` // Unified subscription: Cross-Network + CRM Upsell + Kaughtman Managed WhatsApp
-	PaidSubscriptionSubID    string     `gorm:"default:''"`
-	PaidSubscriptionRenewsAt *time.Time // nil until purchased
+	HasRTOEngine             bool         `gorm:"default:false"`
+	Tier                     MerchantTier `gorm:"type:varchar(30);not null;default:'free'" json:"tier"`
+	SubscriptionStartedAt    *time.Time   `json:"subscription_started_at"`
+	SubscriptionRenewsAt     *time.Time   `json:"subscription_renews_at"`
+	HasPaidSubscription      bool         `gorm:"default:false"` // Unified subscription: Cross-Network + CRM Upsell + Kaughtman Managed WhatsApp
+	PaidSubscriptionSubID    string       `gorm:"default:''"`
+	PaidSubscriptionRenewsAt *time.Time   // nil until purchased
 
 	// --- SIGNALS SUBSYSTEM ---
 	Vertical string `gorm:"default:''"` // "d2c_fashion" | "d2c_electronics" | "d2c_fmcg" | "d2c_beauty" | "d2c_home" | ""
@@ -40,22 +43,32 @@ type Merchant struct {
 	FulfillmentSyncComputedAt *time.Time `gorm:"default:null"                   json:"fulfillment_sync_computed_at,omitempty"`
 }
 
+type MerchantTier string
+
+const (
+	TierFree      MerchantTier = "free"
+	TierGrowth    MerchantTier = "growth"
+	TierGrowthAds MerchantTier = "growth_ads"
+)
+
+func IsGrowthOrAbove(tier MerchantTier) bool {
+	return tier == TierGrowth || tier == TierGrowthAds
+}
+
 // CrossNetworkActive returns true if the merchant has access to cross-network intelligence.
-// Free for lifetime under the new pricing architecture.
 func (m *Merchant) CrossNetworkActive() bool {
-	return m.HasPaidSubscription || time.Now().Before(m.CreatedAt.AddDate(0, 0, 30))
+	return IsGrowthOrAbove(m.Tier) || time.Now().Before(m.CreatedAt.AddDate(0, 0, 30))
 }
 
 // CRMUpsellActive returns true if the merchant has access to the CRM Upsell/Recovery module.
-// Free for lifetime under the new pricing architecture.
 func (m *Merchant) CRMUpsellActive() bool {
-	return true
+	return IsGrowthOrAbove(m.Tier) || time.Now().Before(m.CreatedAt.AddDate(0, 0, 30))
 }
 
 // WhatsAppMessagingActive returns true if the merchant is eligible to use Kaughtman-managed WhatsApp messaging.
 // Gated under the Paid Tier (requires paid subscription or active 30-day trial).
 func (m *Merchant) WhatsAppMessagingActive() bool {
-	return m.HasPaidSubscription || time.Now().Before(m.CreatedAt.AddDate(0, 0, 30))
+	return IsGrowthOrAbove(m.Tier) || time.Now().Before(m.CreatedAt.AddDate(0, 0, 30))
 }
 
 // InActiveMode returns true if this merchant should have live RTO enforcement running.
@@ -115,6 +128,7 @@ type MerchantSettings struct {
     MetaAdAccountID   string `gorm:"default:''"`  // e.g. "act_1234567890"
     MetaTestEventCode string `gorm:"default:''"`  // only set in staging/dev
     MetaCAPIEnabled   bool   `gorm:"column:meta_capi_enabled;default:false"` // master on/off switch
+    CapiDatasetID      string `gorm:"default:''" json:"capi_dataset_id"`
 
     CreatedAt time.Time
     UpdatedAt time.Time
@@ -186,10 +200,14 @@ type InsightsResponse struct {
     // =========================================================
     // MODULE ENTITLEMENTS — always returned, frontend uses these to render paywalls
     // =========================================================
-    HasRTOEngine         bool `json:"has_rto_engine"`
-    HasPaidSubscription  bool `json:"has_paid_subscription"`
-    HasCrossNetworkIntel bool `json:"has_cross_network_intel"`
-    HasCRMUpsellEngine   bool `json:"has_crm_upsell_engine"`
+    HasRTOEngine         bool         `json:"has_rto_engine"`
+    HasPaidSubscription  bool         `json:"has_paid_subscription"`
+    HasCrossNetworkIntel bool         `json:"has_cross_network_intel"`
+    HasCRMUpsellEngine   bool         `json:"has_crm_upsell_engine"`
+    Tier                 MerchantTier `json:"tier"`
+    CapiEnabled          bool         `json:"capi_enabled"`
+    GrowthMonthlyINR     int          `json:"growth_monthly_inr"`
+    GrowthAdsMonthlyINR  int          `json:"growth_ads_monthly_inr"`
 
     // =========================================================
     // SECTION A — OWN STORE ANALYTICS
