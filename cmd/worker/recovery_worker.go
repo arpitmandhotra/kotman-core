@@ -356,9 +356,9 @@ func (w *RecoveryWorker) executeRouting(
 		slog.Error("Tier 2 WhatsApp send failed — falling through to Tier 3", "error", err)
 	}
 
-	// TIER 3: Kaughtman managed messaging (Included in CRM Upsell / RTO Engine subscription)
-	if !merchant.CRMUpsellActive() {
-		slog.Warn("Tier 3 direct messaging skipped — merchant does not have CRM Upsell / RTO Engine subscription", "merchant_id", merchant.ID)
+	// TIER 3: Kaughtman managed messaging (Gated under Paid Tier)
+	if !merchant.WhatsAppMessagingActive() {
+		slog.Warn("Tier 3 direct messaging skipped — merchant does not have active Paid subscription or trial", "merchant_id", merchant.ID)
 		return
 	}
 
@@ -373,7 +373,18 @@ func (w *RecoveryWorker) executeRouting(
 	err := w.sendWhatsApp(ctx, rawPhone, phoneHash, event.Template, event.DiscountValue,
 		masterKey, "twilio", merchant.StoreName, orderValue)
 	if err == nil {
-		slog.Info("Tier 3 WhatsApp send successful (included in subscription)", "merchant_id", settings.MerchantID)
+		slog.Info("Tier 3 WhatsApp send successful", "merchant_id", settings.MerchantID)
+		
+		// Record message cost (200 paise = ₹2.00)
+		logErr := w.pg.Create(&domain.WhatsAppMessageLog{
+			MerchantID: merchant.ID,
+			PhoneHash:  phoneHash,
+			CostPaise:  200,
+			SentAt:     time.Now(),
+		}).Error
+		if logErr != nil {
+			slog.Error("failed to log WhatsApp message cost", "merchant_id", merchant.ID, "error", logErr)
+		}
 		return
 	}
 	slog.Error("Tier 3 WhatsApp send failed", "error", err)
@@ -788,28 +799,13 @@ func (w *RecoveryWorker) expireSubscription(ctx context.Context, sub domain.Merc
 		// Determine which Merchant field to flip based on module name
 		merchantUpdates := map[string]interface{}{}
 		switch sub.Module {
-		case domain.ModuleCrossNetwork:
-			// Only revoke HasCrossNetworkIntel if the merchant does NOT have HasRTOEngine.
-			// If they have the RTO engine, cross-network is still bundled and free.
-			var merchant domain.Merchant
-			if err := tx.Select("has_rto_engine").Where("id = ?", sub.MerchantID).First(&merchant).Error; err != nil {
-				return fmt.Errorf("failed to load merchant for expiry check: %w", err)
-			}
-			if !merchant.HasRTOEngine {
-				merchantUpdates["has_cross_network_intel"] = false
-				merchantUpdates["cross_network_renews_at"] = nil
-			} else {
-				// RTO engine still active — cross-network stays on, just remove the sub record
-				slog.Info("cross_network sub expired but RTO engine still active — keeping intel access",
-					"merchant_id", sub.MerchantID,
-				)
-				return nil // Nothing to do on Merchant row
-			}
-
-		case domain.ModuleCRMUpsell:
-			merchantUpdates["has_crm_upsell_engine"] = false
-			merchantUpdates["crm_upsell_renews_at"]   = nil
-
+		case domain.ModuleUnifiedPaid:
+			merchantUpdates["has_paid_subscription"] = false
+			merchantUpdates["paid_subscription_renews_at"] = nil
+		case domain.ModuleCrossNetwork, domain.ModuleCRMUpsell:
+			// Backward compatibility support for expiring older deprecated modules
+			merchantUpdates["has_paid_subscription"] = false
+			merchantUpdates["paid_subscription_renews_at"] = nil
 		default:
 			return fmt.Errorf("unknown module during expiry: %s", sub.Module)
 		}

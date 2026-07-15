@@ -83,13 +83,13 @@ func main() {
 				return err
 			}
 
-			if !merchant.HasRTOEngine {
-				// If not in active mode (e.g. shadow mode or standalone CRM subscription), do not bill transaction fees.
+			if !merchant.HasPaidSubscription && !merchant.HasRTOEngine {
+				// If on free tier with no active subscription/engine, skip invoicing
 				res := tx.Model(&lockAcc).Update("is_invoiced", true)
 				if res.Error != nil {
 					return res.Error
 				}
-				slog.Info("skipped postpaid transaction invoicing for shadow-mode merchant", "merchant_id", acc.MerchantID)
+				slog.Info("skipped invoicing for free-tier merchant with no active paid subscription or RTO engine", "merchant_id", acc.MerchantID)
 				return nil
 			}
 
@@ -108,14 +108,38 @@ func main() {
 			formattedMonth := strings.ReplaceAll(billingMonth, "-", "")
 			invoiceNumber := fmt.Sprintf("KTM-%s-%s-%04d", shortMerchantID, formattedMonth, sequence)
 
-			// Minimum monthly commitment of ₹4,999 (499900 paise) for Active Mode
-			const minCommitmentPaise = 499900
-			finalFeePaise := acc.TotalFeePaise
-			notesStr := fmt.Sprintf("Automatically generated invoice for period %s", billingMonth)
-			if finalFeePaise < minCommitmentPaise {
-				finalFeePaise = minCommitmentPaise
-				notesStr += " (applied minimum monthly commitment of ₹4,999 for active RTO Engine)"
+			// Calculate fees based on new pricing structure
+			var finalFeePaise int = 0
+			var notesParts []string
+
+			// 1. Unified Paid Subscription Fee (₹4,999/month + WhatsApp surcharge)
+			if merchant.HasPaidSubscription {
+				finalFeePaise += 499900
+				notesParts = append(notesParts, "Unified Paid Subscription: ₹4,999")
+
+				// Calculate WhatsApp message surcharge (excess over ₹2,000 / 200,000 paise)
+				var totalWhatsAppCost int64 = 0
+				tx.Model(&domain.WhatsAppMessageLog{}).
+					Where("merchant_id = ? AND sent_at >= ? AND sent_at <= ?", merchant.ID, billingPeriodStart, billingPeriodEnd).
+					Select("COALESCE(SUM(cost_paise), 0)").
+					Row().Scan(&totalWhatsAppCost)
+
+				if totalWhatsAppCost > 200000 {
+					excessPaise := totalWhatsAppCost - 200000
+					finalFeePaise += int(excessPaise)
+					notesParts = append(notesParts, fmt.Sprintf("WhatsApp Surcharge: ₹%.2f (exceeded ₹2,000 threshold)", float64(excessPaise)/100.0))
+				} else if totalWhatsAppCost > 0 {
+					notesParts = append(notesParts, fmt.Sprintf("WhatsApp cost covered: ₹%.2f", float64(totalWhatsAppCost)/100.0))
+				}
 			}
+
+			// 2. RTO Engine Transaction Fee (Pay-per-use)
+			if merchant.HasRTOEngine {
+				finalFeePaise += acc.TotalFeePaise
+				notesParts = append(notesParts, fmt.Sprintf("RTO Engine transaction fees: ₹%.2f", float64(acc.TotalFeePaise)/100.0))
+			}
+
+			notesStr := strings.Join(notesParts, " | ")
 
 			// 2.a. Create MerchantInvoice
 			invoice := domain.MerchantInvoice{

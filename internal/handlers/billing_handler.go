@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"fmt"
 	"log/slog"
 	"os"
 	"strconv"
@@ -59,9 +58,8 @@ func (h *BillingHandler) VerifyPaymentAndActivate(c *fiber.Ctx) error {
 	ctx := c.UserContext()
 	err := h.pg.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		updates := map[string]interface{}{
-			"is_active":               true,
-			"has_rto_engine":          true,
-			"has_cross_network_intel": true,
+			"is_active":      true,
+			"has_rto_engine": true,
 		}
 		return tx.Model(&domain.Merchant{}).Where("id = ?", merchantID).Updates(updates).Error
 	})
@@ -98,24 +96,19 @@ func (h *BillingHandler) PurchaseModule(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"success": false, "error": "invalid body"})
 	}
 
-	// Validate module name
-	if req.Module != domain.ModuleCrossNetwork && req.Module != domain.ModuleCRMUpsell {
+	moduleName := req.Module
+	if moduleName == "cross_network" || moduleName == "crm_upsell" || moduleName == domain.ModuleUnifiedPaid {
+		moduleName = domain.ModuleUnifiedPaid
+	} else {
 		return c.Status(400).JSON(fiber.Map{
 			"success": false,
-			"error":   "invalid module. must be 'cross_network' or 'crm_upsell'",
+			"error":   "invalid module. must be 'unified_paid'",
 		})
 	}
 
-	// Check if RTO engine is active — cross_network is free with it
 	var merchant domain.Merchant
 	if err := h.pg.WithContext(c.UserContext()).Where("id = ?", merchantID).First(&merchant).Error; err != nil {
 		return c.Status(404).JSON(fiber.Map{"success": false, "error": "merchant not found"})
-	}
-	if req.Module == domain.ModuleCrossNetwork && merchant.HasRTOEngine {
-		return c.Status(400).JSON(fiber.Map{
-			"success": false,
-			"error":   "cross_network intelligence is already included with your RTO Engine subscription",
-		})
 	}
 
 	// Upfront subscription payment of ₹4,999/month for flat-fee modules
@@ -130,19 +123,18 @@ func (h *BillingHandler) PurchaseModule(c *fiber.Ctx) error {
 
 	orderID, err := billing.CreateRazorpayOrder(amountPaise, keyID, keySecret)
 	if err != nil {
-		slog.Error("failed to create Razorpay order for module", "module", req.Module, "error", err)
+		slog.Error("failed to create Razorpay order for module", "module", moduleName, "error", err)
 		return c.Status(500).JSON(fiber.Map{"success": false, "error": "failed to create payment order"})
 	}
 
-	// Store the (module, amount) in Redis keyed on Razorpay order ID for the verify step
 	cacheKey := "module_purchase:" + orderID
-	cacheVal := req.Module + ":" + strconv.Itoa(modulePriceINR)
+	cacheVal := moduleName + ":" + strconv.Itoa(modulePriceINR)
 	h.rdb.Set(c.UserContext(), cacheKey, cacheVal, 30*time.Minute)
 
 	return c.Status(201).JSON(fiber.Map{
 		"success":           true,
 		"razorpay_order_id": orderID,
-		"module":            req.Module,
+		"module":            moduleName,
 		"amount_inr":        modulePriceINR,
 	})
 }
@@ -157,7 +149,7 @@ func (h *BillingHandler) VerifyModulePurchase(c *fiber.Ctx) error {
 		return c.Status(401).JSON(fiber.Map{"success": false, "error": "unauthorized"})
 	}
 
-	var req VerifyRequest // reuse existing struct
+	var req VerifyRequest
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(400).JSON(fiber.Map{"success": false, "error": "invalid body"})
 	}
@@ -167,7 +159,6 @@ func (h *BillingHandler) VerifyModulePurchase(c *fiber.Ctx) error {
 		return c.Status(401).JSON(fiber.Map{"success": false, "error": "signature verification failed"})
 	}
 
-	// Retrieve module from Redis cache
 	cacheKey := "module_purchase:" + req.OrderID
 	cacheVal, err := h.rdb.Get(c.UserContext(), cacheKey).Result()
 	if err != nil {
@@ -180,18 +171,15 @@ func (h *BillingHandler) VerifyModulePurchase(c *fiber.Ctx) error {
 	}
 	moduleName := parts[0]
 
-	// Fetch current merchant state for idempotency check
 	var merchant domain.Merchant
 	if err := h.pg.WithContext(c.UserContext()).Where("id = ?", merchantID).First(&merchant).Error; err != nil {
 		return c.Status(404).JSON(fiber.Map{"success": false, "error": "merchant not found"})
 	}
 
-	// Activate the module in a Postgres transaction (Upfront subscription payment)
 	now := time.Now()
 	renewsAt := now.AddDate(0, 1, 0) // monthly renewal date
 
 	err = h.pg.WithContext(c.UserContext()).Transaction(func(tx *gorm.DB) error {
-		// Upsert MerchantSubscription row
 		sub := domain.MerchantSubscription{
 			MerchantID:          merchantID,
 			Module:              moduleName,
@@ -206,17 +194,9 @@ func (h *BillingHandler) VerifyModulePurchase(c *fiber.Ctx) error {
 			return err
 		}
 
-		// Flip the corresponding bool on Merchant
-		updates := map[string]interface{}{}
-		switch moduleName {
-		case domain.ModuleCrossNetwork:
-			updates["has_cross_network_intel"] = true
-			updates["cross_network_renews_at"]  = renewsAt
-		case domain.ModuleCRMUpsell:
-			updates["has_crm_upsell_engine"] = true
-			updates["crm_upsell_renews_at"]   = renewsAt
-		default:
-			return fmt.Errorf("unknown module: %s", moduleName)
+		updates := map[string]interface{}{
+			"has_paid_subscription":       true,
+			"paid_subscription_renews_at": renewsAt,
 		}
 		return tx.Model(&domain.Merchant{}).Where("id = ?", merchantID).Updates(updates).Error
 	})
@@ -226,7 +206,6 @@ func (h *BillingHandler) VerifyModulePurchase(c *fiber.Ctx) error {
 		return c.Status(500).JSON(fiber.Map{"success": false, "error": "failed to activate module"})
 	}
 
-	// Clean up Redis cache key
 	h.rdb.Del(c.UserContext(), cacheKey)
 
 	slog.Info("module purchased and activated in real time", "module", moduleName, "merchant_id", merchantID)

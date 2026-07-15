@@ -91,9 +91,9 @@ func KaughtmanFee(orderValuePaise int) int {
 type MerchantSubscription struct {
 	gorm.Model
 	MerchantID         string     `gorm:"uniqueIndex:idx_merchant_module;not null"`
-	Module             string     `gorm:"uniqueIndex:idx_merchant_module;not null"` // "cross_network" | "crm_upsell"
+	Module             string     `gorm:"uniqueIndex:idx_merchant_module;not null"` // "unified_paid"
 	Status             string     `gorm:"default:'inactive'"` // "active" | "inactive" | "cancelled"
-	PriceINR           int        `gorm:"not null"`           // 4999 for both modules
+	PriceINR           int        `gorm:"not null"`           // 4999
 	RazorpaySubID      string     `gorm:"default:''"`         // Razorpay subscription ID if recurring
 	RazorpayOrderID    string     `gorm:"default:''"`         // for one-time payment flow
 	CurrentPeriodStart *time.Time
@@ -103,6 +103,15 @@ type MerchantSubscription struct {
 
 // Module name constants
 const (
-	ModuleCrossNetwork = "cross_network"
-	ModuleCRMUpsell    = "crm_upsell"
+	ModuleCrossNetwork = "cross_network" // Deprecated: standalone modules clubbed
+	ModuleCRMUpsell    = "crm_upsell"    // Deprecated: standalone modules clubbed
+	ModuleUnifiedPaid  = "unified_paid"  // Unified subscription module
 )
+
+type WhatsAppMessageLog struct {
+	gorm.Model
+	MerchantID string    `gorm:"index;not null"`
+	PhoneHash  string    `gorm:"index;not null"`
+	CostPaise  int       `gorm:"not null;default:200"` // default 200 paise (₹2.00) per message
+	SentAt     time.Time `gorm:"index"`
+}

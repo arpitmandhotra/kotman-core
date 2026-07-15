@@ -53,6 +53,7 @@ func NewPostgresClient() *gorm.DB {
 		&domain.MerchantBillingAccumulator{},
 		&domain.OrderAudit{},
 		&domain.MerchantSubscription{},
+		&domain.WhatsAppMessageLog{},
 		&domain.AWBMapping{},
 		&domain.NormalizedDeliveryEvent{},
 		&domain.ProcessedWebhookEvent{},

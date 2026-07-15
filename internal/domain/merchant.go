@@ -21,17 +21,10 @@ type Merchant struct {
 	UpdatedAt time.Time
 
 	// --- SUBSCRIPTION MODULES ---
-	// Each bool represents whether the merchant has purchased that module.
-	// HasRTOEngine = true also grants CrossNetworkIntelligence for free.
-	HasRTOEngine         bool       `gorm:"default:false"`
-	HasCrossNetworkIntel bool       `gorm:"default:false"` // true if purchased standalone OR HasRTOEngine
-	HasCRMUpsellEngine   bool       `gorm:"default:false"`
-
-	// Monthly subscription tracking for flat-fee modules
-	CrossNetworkSubID    string     `gorm:"default:''"` // Razorpay subscription ID or manual ref
-	CRMUpsellSubID       string     `gorm:"default:''"` // Razorpay subscription ID or manual ref
-	CrossNetworkRenewsAt *time.Time // nil until purchased
-	CRMUpsellRenewsAt    *time.Time // nil until purchased
+	HasRTOEngine             bool       `gorm:"default:false"`
+	HasPaidSubscription      bool       `gorm:"default:false"` // Unified subscription: Cross-Network + CRM Upsell + Kaughtman Managed WhatsApp
+	PaidSubscriptionSubID    string     `gorm:"default:''"`
+	PaidSubscriptionRenewsAt *time.Time // nil until purchased
 
 	// --- SIGNALS SUBSYSTEM ---
 	Vertical string `gorm:"default:''"` // "d2c_fashion" | "d2c_electronics" | "d2c_fmcg" | "d2c_beauty" | "d2c_home" | ""
@@ -47,23 +40,27 @@ type Merchant struct {
 	FulfillmentSyncComputedAt *time.Time `gorm:"default:null"                   json:"fulfillment_sync_computed_at,omitempty"`
 }
 
-// CrossNetworkActive returns true if the merchant has access to cross-network intelligence,
-// either via standalone purchase or because they have the RTO engine (bundled).
+// CrossNetworkActive returns true if the merchant has access to cross-network intelligence.
+// Free for lifetime under the new pricing architecture.
 func (m *Merchant) CrossNetworkActive() bool {
-	return m.HasCrossNetworkIntel || m.HasRTOEngine
+	return true
 }
 
-// CRMUpsellActive returns true if the merchant has access to the CRM Upsell/Recovery module,
-// either via standalone purchase or because they have the RTO engine (bundled).
+// CRMUpsellActive returns true if the merchant has access to the CRM Upsell/Recovery module.
+// Free for lifetime under the new pricing architecture.
 func (m *Merchant) CRMUpsellActive() bool {
-	return m.HasCRMUpsellEngine || m.HasRTOEngine
+	return true
+}
+
+// WhatsAppMessagingActive returns true if the merchant is eligible to use Kaughtman-managed WhatsApp messaging.
+// Gated under the Paid Tier (requires paid subscription or active 30-day trial).
+func (m *Merchant) WhatsAppMessagingActive() bool {
+	return m.HasPaidSubscription || time.Now().Before(m.CreatedAt.AddDate(0, 0, 30))
 }
 
 // InActiveMode returns true if this merchant should have live RTO enforcement running.
-// This is the single source of truth for execution mode decisions across the codebase.
-// It does NOT depend on ShadowModeEndsAt — that field is only for UI countdown display.
 func (m *Merchant) InActiveMode() bool {
-	return m.IsActive || m.HasRTOEngine
+	return m.HasRTOEngine
 }
 
 type ExecutionMode string
@@ -190,7 +187,8 @@ type InsightsResponse struct {
     // MODULE ENTITLEMENTS — always returned, frontend uses these to render paywalls
     // =========================================================
     HasRTOEngine         bool `json:"has_rto_engine"`
-    HasCrossNetworkIntel bool `json:"has_cross_network_intel"` // true if RTO active OR standalone purchased
+    HasPaidSubscription  bool `json:"has_paid_subscription"`
+    HasCrossNetworkIntel bool `json:"has_cross_network_intel"`
     HasCRMUpsellEngine   bool `json:"has_crm_upsell_engine"`
 
     // =========================================================

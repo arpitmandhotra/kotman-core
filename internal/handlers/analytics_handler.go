@@ -46,13 +46,12 @@ func (h *AnalyticsHandler) GetMerchantInsights(c *fiber.Ctx) error {
 	// META FIELDS
 	// =====================================================================
 	now := time.Now()
-	executionMode := "ACTIVE"
+	executionMode := "ACTIVE" // shadow mode is removed altogether, always ACTIVE
+	
+	trialEndsAt := merchant.CreatedAt.AddDate(0, 0, 30)
 	shadowDaysRemaining := 0
-	if !merchant.IsActive || now.Before(merchant.ShadowModeEndsAt) {
-		executionMode = "SHADOW"
-	}
-	if now.Before(merchant.ShadowModeEndsAt) {
-		shadowDaysRemaining = int(time.Until(merchant.ShadowModeEndsAt).Hours() / 24)
+	if now.Before(trialEndsAt) {
+		shadowDaysRemaining = int(time.Until(trialEndsAt).Hours() / 24)
 	}
 
 	var totalOrdersAnalyzed int64
@@ -63,31 +62,23 @@ func (h *AnalyticsHandler) GetMerchantInsights(c *fiber.Ctx) error {
 
 	// =====================================================================
 	// UPGRADE PROMPT LOGIC
-	// Prompt starts on day 25 (= shadowDaysRemaining <= 10 for a 35-day window)
+	// Prompt daily if past the original 30 days trial and paid sub is false
 	// =====================================================================
 	showUpgradePrompt := false
 	urgencyLevel := 0
 	shadowDaysPastExpiry := 0
 
-	daysSinceCreation := int(now.Sub(merchant.CreatedAt).Hours() / 24)
-
-	if !merchant.HasRTOEngine {
-		if now.After(merchant.ShadowModeEndsAt) {
-			// Past shadow: urgent escalation
-			shadowDaysPastExpiry = int(now.Sub(merchant.ShadowModeEndsAt).Hours() / 24)
+	if !merchant.HasPaidSubscription {
+		if now.After(trialEndsAt) {
+			shadowDaysPastExpiry = int(now.Sub(trialEndsAt).Hours() / 24)
 			showUpgradePrompt = true
-			urgencyLevel = 3
-		} else if daysSinceCreation >= 25 {
-			// Days 25–35: show prompt
+			urgencyLevel = 3 // urgent upgrade prompt every day
+		} else if shadowDaysRemaining <= 5 {
 			showUpgradePrompt = true
-			daysUntilEnd := shadowDaysRemaining
-			if daysUntilEnd <= 3 {
-				urgencyLevel = 3
-			} else if daysUntilEnd <= 7 {
-				urgencyLevel = 2
-			} else {
-				urgencyLevel = 1
-			}
+			urgencyLevel = 2
+		} else {
+			showUpgradePrompt = true
+			urgencyLevel = 1
 		}
 	}
 
@@ -157,7 +148,7 @@ func (h *AnalyticsHandler) GetMerchantInsights(c *fiber.Ctx) error {
 	resp := domain.InsightsResponse{
 		ExecutionMode:            executionMode,
 		ShadowDaysRemaining:      shadowDaysRemaining,
-		ShadowEndsAt:             merchant.ShadowModeEndsAt,
+		ShadowEndsAt:             trialEndsAt,
 		TotalOrdersAnalyzed:      int(totalOrdersAnalyzed),
 		DataCollectionStartedAt:  merchant.CreatedAt,
 		MinCohortMet:             minCohortMet,
@@ -168,11 +159,12 @@ func (h *AnalyticsHandler) GetMerchantInsights(c *fiber.Ctx) error {
 		SimulatedSavingsRangeMin: simSavingsMin,
 		SimulatedSavingsRangeMax: simSavingsMax,
 		HasRTOEngine:             merchant.HasRTOEngine,
-		HasCrossNetworkIntel:     hasCrossNetwork,
-		HasCRMUpsellEngine:       merchant.CRMUpsellActive(),
+		HasPaidSubscription:      merchant.HasPaidSubscription,
+		HasCrossNetworkIntel:     true, // free for lifetime
+		HasCRMUpsellEngine:       true, // free for lifetime
 		OwnStore:                 ownStore,
 		CrossNetwork:             crossNetwork,
-		CrossNetworkPaywalled:    crossNetworkPaywalled,
+		CrossNetworkPaywalled:    false, // free for lifetime, never paywalled
 		RTOEngine:                rtoEngine,
 	}
 

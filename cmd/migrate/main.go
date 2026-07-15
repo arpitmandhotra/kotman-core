@@ -104,6 +104,11 @@ func main() {
 		log.Fatalf("❌ Failed to migrate ProcessedWebhookEvent: %v", err)
 	}
 
+	log.Println("📦 Syncing domain.WhatsAppMessageLog schema...")
+	if err := db.AutoMigrate(&domain.WhatsAppMessageLog{}); err != nil {
+		log.Fatalf("❌ Failed to migrate WhatsAppMessageLog: %v", err)
+	}
+
 	log.Println("📦 Syncing domain.CatalogProduct schema...")
 	if err := db.AutoMigrate(&domain.CatalogProduct{}); err != nil {
 		log.Fatalf("❌ Failed to migrate CatalogProduct: %v", err)
