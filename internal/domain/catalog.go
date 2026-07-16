@@ -32,12 +32,15 @@ type CatalogProduct struct {
 }
 
 type Order struct {
-	ID             uuid.UUID `gorm:"type:uuid;primaryKey"`
-	MerchantID     uuid.UUID `gorm:"type:uuid;index;not null"`
-	OrderNumber    string    `gorm:"index;not null"`
-	DeliveryStatus string    `gorm:"default:''"`
-	NDRAttempts    int       `gorm:"default:0"`
-	CreatedAt      time.Time `gorm:"index"`
+	ID                   uuid.UUID `gorm:"type:uuid;primaryKey"`
+	MerchantID           uuid.UUID `gorm:"type:uuid;index;not null"`
+	OrderNumber          string    `gorm:"index;not null"`
+	DeliveryStatus       string    `gorm:"default:''"`
+	NDRAttempts          int       `gorm:"default:0"`
+	CreatedAt            time.Time `gorm:"index"`
+	BuyerPhoneNormalized string    `gorm:"index;default:''" json:"buyer_phone_normalized"`
+	BuyerEmail           string    `gorm:"index;default:''" json:"buyer_email"`
+	Outcome              string    `gorm:"default:''" json:"outcome"`
 }
 
 type OrderLineItem struct {

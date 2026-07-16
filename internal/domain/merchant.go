@@ -76,6 +76,11 @@ func (m *Merchant) InActiveMode() bool {
 	return m.HasRTOEngine
 }
 
+// IsFoundingPeriodActive returns true if the founding period features are globally unlocked.
+func IsFoundingPeriodActive() bool {
+	return false
+}
+
 type ExecutionMode string
 
 const (
@@ -208,6 +213,7 @@ type InsightsResponse struct {
     CapiEnabled          bool         `json:"capi_enabled"`
     GrowthMonthlyINR     int          `json:"growth_monthly_inr"`
     GrowthAdsMonthlyINR  int          `json:"growth_ads_monthly_inr"`
+    BuyerLoyalty         BuyerLoyaltyInsights `json:"buyer_loyalty"`
 
     // =========================================================
     // SECTION A — OWN STORE ANALYTICS

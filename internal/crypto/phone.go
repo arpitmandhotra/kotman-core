@@ -60,6 +60,11 @@ func HashAPIKey(rawKey string) string {
 
 
 
+// NormalisePhone normalises a phone number to canonical 919XXXXXXXXX format
+func NormalisePhone(raw string) string {
+	return normalisePhone(raw)
+}
+
 // normalisePhone strips all non-digit characters,
 // then ensures a canonical +91 prefix for Indian numbers.
 func normalisePhone(raw string) string {

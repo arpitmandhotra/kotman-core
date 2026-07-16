@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"math"
 	"sort"
 	"log/slog"
@@ -154,6 +155,30 @@ func (h *AnalyticsHandler) GetMerchantInsights(c *fiber.Ctx) error {
 	}
 	capiEnabled := merchant.Tier == domain.TierGrowthAds && settings.MetaCAPIEnabled && settings.MetaPixelID != "" && settings.MetaAccessToken != ""
 
+	// Fetch the most recent BuyerLoyaltySnapshot
+	var snapshot domain.BuyerLoyaltySnapshot
+	err := h.pg.WithContext(ctx).Where("merchant_id = ?", merchant.ID).
+		Order("computed_at DESC").
+		First(&snapshot).Error
+
+	var loyaltyInsights domain.BuyerLoyaltyInsights
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			loyaltyInsights = domain.BuyerLoyaltyInsights{
+				HasSufficientData:      false,
+				InsufficientDataReason: "not_yet_computed",
+			}
+		} else {
+			slog.Error("failed to fetch buyer loyalty snapshot", "merchant_id", merchant.ID, "error", err)
+			loyaltyInsights = domain.BuyerLoyaltyInsights{
+				HasSufficientData:      false,
+				InsufficientDataReason: "not_yet_computed",
+			}
+		}
+	} else {
+		loyaltyInsights = BuildBuyerLoyaltyInsights(&snapshot, merchant.Tier)
+	}
+
 	resp := domain.InsightsResponse{
 		ExecutionMode:            executionMode,
 		ShadowDaysRemaining:      shadowDaysRemaining,
@@ -175,6 +200,7 @@ func (h *AnalyticsHandler) GetMerchantInsights(c *fiber.Ctx) error {
 		CapiEnabled:              capiEnabled,
 		GrowthMonthlyINR:         domain.GrowthMonthlyPaise / 100,
 		GrowthAdsMonthlyINR:      domain.GrowthAdsMonthlyPaise / 100,
+		BuyerLoyalty:             loyaltyInsights,
 		OwnStore:                 ownStore,
 		CrossNetwork:             crossNetwork,
 		CrossNetworkPaywalled:    crossNetworkPaywalled,
@@ -182,6 +208,36 @@ func (h *AnalyticsHandler) GetMerchantInsights(c *fiber.Ctx) error {
 	}
 
 	return c.JSON(resp)
+}
+
+func BuildBuyerLoyaltyInsights(snapshot *domain.BuyerLoyaltySnapshot, tier domain.MerchantTier) domain.BuyerLoyaltyInsights {
+	insights := domain.BuyerLoyaltyInsights{
+		RepeatRatePct:          snapshot.RepeatRatePct,
+		RepeatRateTrendPct:     snapshot.RepeatRateTrendPct,
+		HasSufficientData:      snapshot.HasSufficientData,
+		InsufficientDataReason: snapshot.InsufficientDataReason,
+	}
+
+	if domain.IsGrowthOrAbove(tier) || domain.IsFoundingPeriodActive() {
+		trueRepeatRate := snapshot.TrueRepeatRatePct
+		trueRepeatRateTrend := snapshot.TrueRepeatRateTrendPct
+		shopifyEquiv := snapshot.ShopifyEquivalentRepeatRatePct
+		abuserCount := snapshot.RepeatRTOAbuserCount
+		abuserTotalRTOs := snapshot.RepeatRTOAbuserTotalRTOs
+		abuserEstCost := snapshot.RepeatRTOAbuserEstimatedCostINR
+
+		insights.TrueRepeatRatePct = &trueRepeatRate
+		insights.TrueRepeatRateTrendPct = &trueRepeatRateTrend
+		if shopifyEquiv != nil {
+			shopifyEquivVal := *shopifyEquiv
+			insights.ShopifyEquivalentRepeatRatePct = &shopifyEquivVal
+		}
+		insights.RepeatRTOAbuserCount = &abuserCount
+		insights.RepeatRTOAbuserTotalRTOs = &abuserTotalRTOs
+		insights.RepeatRTOAbuserEstimatedCostINR = &abuserEstCost
+	}
+
+	return insights
 }
 
 func (h *AnalyticsHandler) computeOwnStoreAnalytics(ctx context.Context, merchantID string) (domain.OwnStoreAnalytics, error) {

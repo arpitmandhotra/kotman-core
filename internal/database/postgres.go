@@ -62,6 +62,8 @@ func NewPostgresClient() *gorm.DB {
 		&domain.CatalogProduct{},
 		&domain.Order{},
 		&domain.OrderLineItem{},
+		&domain.BuyerProfile{},
+		&domain.BuyerLoyaltySnapshot{},
 	)
 	if err != nil {
 		log.Fatalf("Failed to auto-migrate database schema: %v", err)
@@ -84,6 +86,23 @@ func NewPostgresClient() *gorm.DB {
 	`
 	if err := db.Exec(alterMerchantSettingsSQL).Error; err != nil {
 		log.Fatalf("Failed to migrate MerchantSettings columns: %v", err)
+	}
+
+	uniqueIndexSQL := `
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_buyer_loyalty_snapshots_merchant_date 
+		ON buyer_loyalty_snapshots (merchant_id, (period_end_at::date));
+	`
+	if err := db.Exec(uniqueIndexSQL).Error; err != nil {
+		log.Fatalf("Failed to migrate BuyerLoyaltySnapshot unique index: %v", err)
+	}
+
+	alterOrderSQL := `
+		ALTER TABLE orders ADD COLUMN IF NOT EXISTS buyer_phone_normalized VARCHAR(100) NOT NULL DEFAULT '';
+		ALTER TABLE orders ADD COLUMN IF NOT EXISTS buyer_email VARCHAR(200) NOT NULL DEFAULT '';
+		ALTER TABLE orders ADD COLUMN IF NOT EXISTS outcome VARCHAR(50) NOT NULL DEFAULT '';
+	`
+	if err := db.Exec(alterOrderSQL).Error; err != nil {
+		log.Fatalf("Failed to migrate Order buyer columns: %v", err)
 	}
 
 	log.Println("--> Successfully connected to PostgreSQL Cold Storage!")

@@ -139,6 +139,25 @@ func main() {
 		log.Fatalf("❌ Failed to migrate ScoreComponent: %v", err)
 	}
 
+	log.Println("📦 Syncing domain.BuyerProfile schema...")
+	if err := db.AutoMigrate(&domain.BuyerProfile{}); err != nil {
+		log.Fatalf("❌ Failed to migrate BuyerProfile: %v", err)
+	}
+
+	log.Println("📦 Syncing domain.BuyerLoyaltySnapshot schema...")
+	if err := db.AutoMigrate(&domain.BuyerLoyaltySnapshot{}); err != nil {
+		log.Fatalf("❌ Failed to migrate BuyerLoyaltySnapshot: %v", err)
+	}
+
+	log.Println("📦 Running raw migration to configure BuyerLoyaltySnapshot unique index...")
+	uniqueIndexSQL := `
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_buyer_loyalty_snapshots_merchant_date 
+		ON buyer_loyalty_snapshots (merchant_id, (period_end_at::date));
+	`
+	if err := db.Exec(uniqueIndexSQL).Error; err != nil {
+		log.Fatalf("❌ Failed to migrate BuyerLoyaltySnapshot unique index: %v", err)
+	}
+
 	log.Println("📦 Syncing domain.CatalogProduct schema...")
 	if err := db.AutoMigrate(&domain.CatalogProduct{}); err != nil {
 		log.Fatalf("❌ Failed to migrate CatalogProduct: %v", err)
@@ -147,6 +166,16 @@ func main() {
 	log.Println("📦 Syncing domain.Order schema...")
 	if err := db.AutoMigrate(&domain.Order{}); err != nil {
 		log.Fatalf("❌ Failed to migrate Order: %v", err)
+	}
+
+	log.Println("📦 Running raw migration to configure order buyer columns...")
+	alterOrderSQL := `
+		ALTER TABLE orders ADD COLUMN IF NOT EXISTS buyer_phone_normalized VARCHAR(100) NOT NULL DEFAULT '';
+		ALTER TABLE orders ADD COLUMN IF NOT EXISTS buyer_email VARCHAR(200) NOT NULL DEFAULT '';
+		ALTER TABLE orders ADD COLUMN IF NOT EXISTS outcome VARCHAR(50) NOT NULL DEFAULT '';
+	`
+	if err := db.Exec(alterOrderSQL).Error; err != nil {
+		log.Fatalf("❌ Failed to migrate Order buyer columns: %v", err)
 	}
 
 	log.Println("📦 Syncing domain.OrderLineItem schema...")

@@ -11,6 +11,7 @@ const (
 	GrowthAdsMonthlyPaise     = 899900
 	WhatsAppMonthlyCapPaise   = 200000
 	CAPIStandaloneValuePaise  = 299900
+	CostPerRTOINR             = 210
 )
 
 type BillableEvent struct {
