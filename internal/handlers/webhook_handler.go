@@ -15,6 +15,7 @@ import (
 	"github.com/arpitmandhotra/api-integrator/internal/domain"
 	"github.com/arpitmandhotra/api-integrator/internal/service"
 	"github.com/gofiber/fiber/v2"
+	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
 )
@@ -123,6 +124,15 @@ func (h *WebhookHandler) HandleShopify(c *fiber.Ctx) error {
 					if err := billing.ProcessInboundOrder(ctx, platform, mID, body); err != nil {
 						slog.Error("billing ingestion failed", "platform", platform, "merchant_id", mID, "error", err)
 					}
+				} else if top == "orders/fulfilled" {
+					var orderUUID uuid.UUID
+					merchantUUID, err := uuid.Parse(mID)
+					if err == nil {
+						orderUUID = uuid.NewSHA1(merchantUUID, []byte(oID))
+						if err := h.pg.WithContext(ctx).Model(&domain.Order{}).Where("id = ?", orderUUID).Update("fulfillment_status", "fulfilled").Error; err != nil {
+							slog.Error("failed to update order to fulfilled status", "order_id", oID, "error", err)
+						}
+					}
 				}
 			}("shopify", merchantID, orderID, topic, bodyCopy)
 		}
@@ -200,6 +210,15 @@ func (h *WebhookHandler) HandleWooCommerce(c *fiber.Ctx) error {
 				} else if top == "order.created" {
 					if err := billing.ProcessInboundOrder(ctx, platform, mID, body); err != nil {
 						slog.Error("billing ingestion failed", "platform", platform, "merchant_id", mID, "error", err)
+					}
+				} else if top == "order.completed" {
+					var orderUUID uuid.UUID
+					merchantUUID, err := uuid.Parse(mID)
+					if err == nil {
+						orderUUID = uuid.NewSHA1(merchantUUID, []byte(oID))
+						if err := h.pg.WithContext(ctx).Model(&domain.Order{}).Where("id = ?", orderUUID).Update("fulfillment_status", "fulfilled").Error; err != nil {
+							slog.Error("failed to update order to fulfilled status", "order_id", oID, "error", err)
+						}
 					}
 				}
 			}("woocommerce", merchantID, orderID, topic, bodyCopy)
@@ -291,6 +310,15 @@ func (h *WebhookHandler) HandleMagento(c *fiber.Ctx) error {
 				} else if stat == "pending" {
 					if err := billing.ProcessInboundOrder(ctx, platform, mID, body); err != nil {
 						slog.Error("billing ingestion failed", "platform", platform, "merchant_id", mID, "error", err)
+					}
+				} else if stat == "complete" {
+					var orderUUID uuid.UUID
+					merchantUUID, err := uuid.Parse(mID)
+					if err == nil {
+						orderUUID = uuid.NewSHA1(merchantUUID, []byte(oID))
+						if err := h.pg.WithContext(ctx).Model(&domain.Order{}).Where("id = ?", orderUUID).Update("fulfillment_status", "fulfilled").Error; err != nil {
+							slog.Error("failed to update order to fulfilled status", "order_id", oID, "error", err)
+						}
 					}
 				}
 			}("magento", merchantID, orderID, status, bodyCopy)

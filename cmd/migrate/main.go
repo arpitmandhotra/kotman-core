@@ -173,6 +173,12 @@ func main() {
 		ALTER TABLE orders ADD COLUMN IF NOT EXISTS buyer_phone_normalized VARCHAR(100) NOT NULL DEFAULT '';
 		ALTER TABLE orders ADD COLUMN IF NOT EXISTS buyer_email VARCHAR(200) NOT NULL DEFAULT '';
 		ALTER TABLE orders ADD COLUMN IF NOT EXISTS outcome VARCHAR(50) NOT NULL DEFAULT '';
+		ALTER TABLE orders ADD COLUMN IF NOT EXISTS fulfillment_status VARCHAR(100) NOT NULL DEFAULT '';
+		ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_method VARCHAR(50) NOT NULL DEFAULT '';
+		ALTER TABLE orders ADD COLUMN IF NOT EXISTS order_value_paise INT NOT NULL DEFAULT 0;
+		ALTER TABLE orders ADD COLUMN IF NOT EXISTS shipping_address_pincode VARCHAR(20) NOT NULL DEFAULT '';
+		ALTER TABLE orders ADD COLUMN IF NOT EXISTS city VARCHAR(100) NOT NULL DEFAULT '';
+		ALTER TABLE orders ADD COLUMN IF NOT EXISTS state VARCHAR(100) NOT NULL DEFAULT '';
 	`
 	if err := db.Exec(alterOrderSQL).Error; err != nil {
 		log.Fatalf("❌ Failed to migrate Order buyer columns: %v", err)

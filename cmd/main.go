@@ -175,6 +175,11 @@ func main() {
 		analyticsHandler.GetMerchantInsights,
 	)
 
+	app.Get("/v1/merchants/buyer-intelligence",
+		middleware.RequireAPIKey(postgresClient, redisClient),
+		analyticsHandler.GetBuyerIntelligence,
+	)
+
 	// Score API Endpoints
 	app.Get("/v1/merchants/:id/scores",
 		middleware.RequireAPIKey(postgresClient, redisClient),

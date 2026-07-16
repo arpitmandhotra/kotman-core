@@ -17,6 +17,7 @@ import (
 	"github.com/arpitmandhotra/api-integrator/internal/database"
 	"github.com/arpitmandhotra/api-integrator/internal/domain"
 	"github.com/arpitmandhotra/api-integrator/internal/integrations/woocommerce"
+	"github.com/google/uuid"
 	"golang.org/x/time/rate"
 )
 
@@ -211,8 +212,15 @@ func BackfillOrderHistory(ctx context.Context, merchantID, platform string) erro
 						Phone string `json:"phone"`
 					} `json:"billing_address"`
 					ShippingAddress *struct {
-						Phone string `json:"phone"`
+						Phone    string `json:"phone"`
+						City     string `json:"city"`
+						Province string `json:"province"`
+						Zip      string `json:"zip"`
 					} `json:"shipping_address"`
+					Gateway     string `json:"gateway"`
+					TotalPrice  string `json:"total_price"`
+					Email       string `json:"email"`
+					OrderNumber int64  `json:"order_number"`
 				} `json:"orders"`
 			}
 
@@ -313,6 +321,59 @@ func BackfillOrderHistory(ctx context.Context, merchantID, platform string) erro
 					order.FinancialStatus == "voided" ||
 					order.CancelledAt != nil ||
 					isUnfulfilledPaidRTO
+
+				// Save order details to orders table
+				merchantUUID, _ := uuid.Parse(merchantID)
+				orderUUID := uuid.NewSHA1(merchantUUID, []byte(orderIDStr))
+
+				outcome := "DELIVERED"
+				if isRTO {
+					outcome = "RTO"
+				} else if order.FulfillmentStatus != "fulfilled" {
+					outcome = "PENDING"
+				}
+
+				orderValuePaise := 0
+				if val, err := strconv.ParseFloat(order.TotalPrice, 64); err == nil {
+					orderValuePaise = int(val * 100)
+				}
+
+				paymentMethod := "prepaid"
+				g := strings.ToLower(order.Gateway)
+				if g == "cod" || g == "cash_on_delivery" || g == "manual" || strings.Contains(g, "cod") {
+					paymentMethod = "cod"
+				}
+
+				pincode := ""
+				city := ""
+				state := ""
+				if order.ShippingAddress != nil {
+					pincode = order.ShippingAddress.Zip
+					city = order.ShippingAddress.City
+					state = order.ShippingAddress.Province
+				}
+
+				orderRecord := domain.Order{
+					ID:                     orderUUID,
+					MerchantID:             merchantUUID,
+					OrderNumber:            strconv.FormatInt(order.OrderNumber, 10),
+					DeliveryStatus:         order.FulfillmentStatus,
+					NDRAttempts:            0,
+					CreatedAt:              order.CreatedAt,
+					BuyerPhoneNormalized:   hash,
+					BuyerEmail:             strings.ToLower(strings.TrimSpace(order.Email)),
+					Outcome:                outcome,
+					FulfillmentStatus:      order.FulfillmentStatus,
+					PaymentMethod:          paymentMethod,
+					OrderValuePaise:        orderValuePaise,
+					ShippingAddressPincode: pincode,
+					City:                   city,
+					State:                  state,
+				}
+
+				if err := pg.Save(&orderRecord).Error; err != nil {
+					slog.Error("failed to save backfilled order to database", "order_id", orderIDStr, "error", err)
+				}
 
 				// Increment trust metrics
 				database.IncrementMetric(pg, hash, "total_orders")

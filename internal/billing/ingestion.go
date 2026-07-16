@@ -178,6 +178,8 @@ func ProcessInboundOrder(ctx context.Context, platform string, merchantID string
 	var rawPhone string
 	var email string
 	var cityName string
+	var zipCode string
+	var provinceName string
 
 	switch payload.Platform {
 	case "shopify":
@@ -205,6 +207,8 @@ func ProcessInboundOrder(ctx context.Context, platform string, merchantID string
 
 		if shipAddr, ok := rawPayload["shipping_address"].(map[string]interface{}); ok {
 			cityName = getString(shipAddr, "city")
+			zipCode = getString(shipAddr, "zip")
+			provinceName = getString(shipAddr, "province")
 		}
 
 		// Note attributes
@@ -243,6 +247,8 @@ func ProcessInboundOrder(ctx context.Context, platform string, merchantID string
 
 		if shippingObj, ok := rawPayload["shipping"].(map[string]interface{}); ok {
 			cityName = getString(shippingObj, "city")
+			zipCode = getString(shippingObj, "postcode")
+			provinceName = getString(shippingObj, "state")
 		}
 
 		// Meta data
@@ -282,6 +288,8 @@ func ProcessInboundOrder(ctx context.Context, platform string, merchantID string
 
 		if shipAddr, ok := rawPayload["shipping_address"].(map[string]interface{}); ok {
 			cityName = getString(shipAddr, "city")
+			zipCode = getString(shipAddr, "postcode")
+			provinceName = getString(shipAddr, "region")
 		}
 
 		if extAttrs, ok := rawPayload["extension_attributes"].(map[string]interface{}); ok {
@@ -314,6 +322,8 @@ func ProcessInboundOrder(ctx context.Context, platform string, merchantID string
 		if cityName == "" {
 			if shipAddr, ok := rawPayload["shipping_address"].(map[string]interface{}); ok {
 				cityName = getString(shipAddr, "city")
+				zipCode = getString(shipAddr, "zip", "postcode", "pincode")
+				provinceName = getString(shipAddr, "province", "state", "region")
 			}
 		}
 
@@ -430,15 +440,21 @@ func ProcessInboundOrder(ctx context.Context, platform string, merchantID string
 		}
 
 		orderRecord := domain.Order{
-			ID:                   orderUUID,
-			MerchantID:           merchantUUID,
-			OrderNumber:          payload.PlatformOrderID,
-			DeliveryStatus:       "pending",
-			NDRAttempts:          0,
-			CreatedAt:            time.Now(),
-			BuyerPhoneNormalized: crypto.HashPhone(rawPhone),
-			BuyerEmail:           strings.ToLower(strings.TrimSpace(email)),
-			Outcome:              outcome,
+			ID:                     orderUUID,
+			MerchantID:             merchantUUID,
+			OrderNumber:            payload.PlatformOrderID,
+			DeliveryStatus:         "pending",
+			NDRAttempts:            0,
+			CreatedAt:              time.Now(),
+			BuyerPhoneNormalized:   crypto.HashPhone(rawPhone),
+			BuyerEmail:             strings.ToLower(strings.TrimSpace(email)),
+			Outcome:                outcome,
+			FulfillmentStatus:      "pending",
+			PaymentMethod:          strings.ToLower(payload.PaymentMethod),
+			OrderValuePaise:        payload.OrderValuePaise,
+			ShippingAddressPincode: zipCode,
+			City:                   cityName,
+			State:                  provinceName,
 		}
 
 		if err := DB.WithContext(ctx).Save(&orderRecord).Error; err != nil {
@@ -772,7 +788,10 @@ func ProcessOrderCreditBack(ctx context.Context, platform, merchantID, orderID s
 			orderUUID = uuid.NewSHA1(merchantUUID, []byte(orderID))
 			var orderRec domain.Order
 			if err := tx.Where("id = ?", orderUUID).First(&orderRec).Error; err == nil {
-				if err := tx.Model(&orderRec).Update("outcome", "RTO").Error; err != nil {
+				if err := tx.Model(&orderRec).Updates(map[string]interface{}{
+					"outcome":            "RTO",
+					"fulfillment_status": "rto",
+				}).Error; err != nil {
 					slog.Error("failed to update order outcome to RTO", "order_id", orderID, "error", err)
 				}
 				if orderRec.BuyerPhoneNormalized != "" {
