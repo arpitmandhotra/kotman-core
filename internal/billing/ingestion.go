@@ -17,6 +17,7 @@ import (
 	"github.com/arpitmandhotra/api-integrator/internal/crm"
 	"github.com/arpitmandhotra/api-integrator/internal/domain"
 	"github.com/arpitmandhotra/api-integrator/internal/integrations/meta"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
@@ -177,6 +178,8 @@ func ProcessInboundOrder(ctx context.Context, platform string, merchantID string
 	var rawPhone string
 	var email string
 	var cityName string
+	var zipCode string
+	var provinceName string
 
 	switch payload.Platform {
 	case "shopify":
@@ -204,6 +207,8 @@ func ProcessInboundOrder(ctx context.Context, platform string, merchantID string
 
 		if shipAddr, ok := rawPayload["shipping_address"].(map[string]interface{}); ok {
 			cityName = getString(shipAddr, "city")
+			zipCode = getString(shipAddr, "zip")
+			provinceName = getString(shipAddr, "province")
 		}
 
 		// Note attributes
@@ -242,6 +247,8 @@ func ProcessInboundOrder(ctx context.Context, platform string, merchantID string
 
 		if shippingObj, ok := rawPayload["shipping"].(map[string]interface{}); ok {
 			cityName = getString(shippingObj, "city")
+			zipCode = getString(shippingObj, "postcode")
+			provinceName = getString(shippingObj, "state")
 		}
 
 		// Meta data
@@ -281,6 +288,8 @@ func ProcessInboundOrder(ctx context.Context, platform string, merchantID string
 
 		if shipAddr, ok := rawPayload["shipping_address"].(map[string]interface{}); ok {
 			cityName = getString(shipAddr, "city")
+			zipCode = getString(shipAddr, "postcode")
+			provinceName = getString(shipAddr, "region")
 		}
 
 		if extAttrs, ok := rawPayload["extension_attributes"].(map[string]interface{}); ok {
@@ -313,6 +322,8 @@ func ProcessInboundOrder(ctx context.Context, platform string, merchantID string
 		if cityName == "" {
 			if shipAddr, ok := rawPayload["shipping_address"].(map[string]interface{}); ok {
 				cityName = getString(shipAddr, "city")
+				zipCode = getString(shipAddr, "zip", "postcode", "pincode")
+				provinceName = getString(shipAddr, "province", "state", "region")
 			}
 		}
 
@@ -414,6 +425,70 @@ func ProcessInboundOrder(ctx context.Context, platform string, merchantID string
 
 		// Prepaid wallet balance deduction was removed in postpaid billing migration.
 		// Fees are accumulated in MerchantBillingAccumulator and invoiced postpaid at the end of the month.
+	}
+
+	// ═══════════════════════════════════════════════════════════════
+	// INGESTION PERSISTENCE — Save order record & aggregate buyer profile
+	// ═══════════════════════════════════════════════════════════════
+	var orderUUID uuid.UUID
+	merchantUUID, err := uuid.Parse(merchantID)
+	if err == nil {
+		orderUUID = uuid.NewSHA1(merchantUUID, []byte(payload.PlatformOrderID))
+		outcome := "DELIVERED"
+		if strings.ToLower(payload.PaymentMethod) == "cod" {
+			outcome = "PENDING"
+		}
+
+		orderRecord := domain.Order{
+			ID:                     orderUUID,
+			MerchantID:             merchantUUID,
+			OrderNumber:            payload.PlatformOrderID,
+			DeliveryStatus:         "pending",
+			NDRAttempts:            0,
+			CreatedAt:              time.Now(),
+			BuyerPhoneNormalized:   crypto.HashPhone(rawPhone),
+			BuyerEmail:             strings.ToLower(strings.TrimSpace(email)),
+			Outcome:                outcome,
+			FulfillmentStatus:      "pending",
+			PaymentMethod:          strings.ToLower(payload.PaymentMethod),
+			OrderValuePaise:        payload.OrderValuePaise,
+			ShippingAddressPincode: zipCode,
+			City:                   cityName,
+			State:                  provinceName,
+		}
+
+		if err := DB.WithContext(ctx).Save(&orderRecord).Error; err != nil {
+			slog.Error("failed to save domain.Order during ingestion", "order_id", payload.PlatformOrderID, "error", err)
+		}
+
+		if rawPhone != "" {
+			phoneNormalized := crypto.HashPhone(rawPhone)
+			var bp domain.BuyerProfile
+			err := DB.WithContext(ctx).Where("phone_normalized = ?", phoneNormalized).First(&bp).Error
+			if err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					bp = domain.BuyerProfile{
+						ID:                 uuid.New(),
+						PhoneNormalized:    phoneNormalized,
+						NetworkTotalOrders: 1,
+						NetworkRTOCount:    0,
+						LastUpdatedAt:      time.Now(),
+					}
+					if err := DB.WithContext(ctx).Create(&bp).Error; err != nil {
+						slog.Error("failed to create BuyerProfile during order ingestion", "phone", phoneNormalized, "error", err)
+					}
+				} else {
+					slog.Error("database error looking up BuyerProfile", "error", err)
+				}
+			} else {
+				if err := DB.WithContext(ctx).Model(&bp).Updates(map[string]interface{}{
+					"network_total_orders": gorm.Expr("network_total_orders + 1"),
+					"last_updated_at":      time.Now(),
+				}).Error; err != nil {
+					slog.Error("failed to increment NetworkTotalOrders in BuyerProfile", "phone", phoneNormalized, "error", err)
+				}
+			}
+		}
 	}
 
 	slog.Info("billable event recorded",
@@ -543,6 +618,18 @@ func ProcessInboundOrder(ctx context.Context, platform string, merchantID string
 	go func(rawPhoneVal string, emailVal string, cityNameVal string, eventVal domain.BillableEvent) {
 		capiCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
+
+		var merchant domain.Merchant
+		if err := DB.WithContext(capiCtx).
+			Select("id", "tier").
+			Where("id = ?", eventVal.MerchantID).
+			First(&merchant).Error; err != nil {
+			return
+		}
+
+		if merchant.Tier != domain.TierGrowthAds {
+			return // skip CAPI dispatch entirely
+		}
 
 		var settings domain.MerchantSettings
 		if err := DB.WithContext(capiCtx).
@@ -692,6 +779,34 @@ func ProcessOrderCreditBack(ctx context.Context, platform, merchantID, orderID s
 			slog.Info("credit back already processed (concurrent request), skipping", 
 				"merchant_id", merchantID, "order_id", orderID)
 			return nil
+		}
+
+		// Update corresponding Order outcome to 'RTO' and increment network RTO count
+		var orderUUID uuid.UUID
+		merchantUUID, err := uuid.Parse(merchantID)
+		if err == nil {
+			orderUUID = uuid.NewSHA1(merchantUUID, []byte(orderID))
+			var orderRec domain.Order
+			if err := tx.Where("id = ?", orderUUID).First(&orderRec).Error; err == nil {
+				if err := tx.Model(&orderRec).Updates(map[string]interface{}{
+					"outcome":            "RTO",
+					"fulfillment_status": "rto",
+				}).Error; err != nil {
+					slog.Error("failed to update order outcome to RTO", "order_id", orderID, "error", err)
+				}
+				if orderRec.BuyerPhoneNormalized != "" {
+					var bp domain.BuyerProfile
+					err = tx.Where("phone_normalized = ?", orderRec.BuyerPhoneNormalized).First(&bp).Error
+					if err == nil {
+						if err := tx.Model(&bp).Updates(map[string]interface{}{
+							"network_rto_count": gorm.Expr("network_rto_count + 1"),
+							"last_updated_at":   time.Now(),
+						}).Error; err != nil {
+							slog.Error("failed to increment NetworkRTOCount in BuyerProfile", "phone", orderRec.BuyerPhoneNormalized, "error", err)
+						}
+					}
+				}
+			}
 		}
 
 		// Decrement accumulator totals for the month the event was created in

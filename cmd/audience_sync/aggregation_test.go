@@ -72,6 +72,7 @@ func TestRunAudienceSync_Integration(t *testing.T) {
         StoreName:  "Test Meta Store",
         APIKeyHash: crypto.HashAPIKey("test_api_key_456"),
         IsActive:   true,
+        Tier:       domain.TierGrowthAds,
     }).Error; err != nil {
         t.Fatalf("failed to seed merchant: %v", err)
     }

@@ -44,9 +44,29 @@ func main() {
 		log.Fatalf("❌ Failed to migrate Merchant: %v", err)
 	}
 
+	log.Println("📦 Running raw migration to configure merchant tier check constraints...")
+	alterMerchantSQL := `
+		ALTER TABLE merchants ADD COLUMN IF NOT EXISTS tier VARCHAR(30) NOT NULL DEFAULT 'free';
+		ALTER TABLE merchants ADD COLUMN IF NOT EXISTS subscription_started_at TIMESTAMP WITH TIME ZONE;
+		ALTER TABLE merchants ADD COLUMN IF NOT EXISTS subscription_renews_at TIMESTAMP WITH TIME ZONE;
+		ALTER TABLE merchants DROP CONSTRAINT IF EXISTS chk_merchants_tier;
+		ALTER TABLE merchants ADD CONSTRAINT chk_merchants_tier CHECK (tier IN ('free', 'growth', 'growth_ads'));
+	`
+	if err := db.Exec(alterMerchantSQL).Error; err != nil {
+		log.Fatalf("❌ Failed to migrate Merchant tier columns and constraints: %v", err)
+	}
+
 	log.Println("📦 Syncing domain.MerchantSettings schema...")
 	if err := db.AutoMigrate(&domain.MerchantSettings{}); err != nil {
 		log.Fatalf("❌ Failed to migrate MerchantSettings: %v", err)
+	}
+
+	log.Println("📦 Running raw migration to configure merchant settings columns...")
+	alterMerchantSettingsSQL := `
+		ALTER TABLE merchant_settings ADD COLUMN IF NOT EXISTS capi_dataset_id VARCHAR(100) NOT NULL DEFAULT '';
+	`
+	if err := db.Exec(alterMerchantSettingsSQL).Error; err != nil {
+		log.Fatalf("❌ Failed to migrate MerchantSettings columns: %v", err)
 	}
 
 	log.Println("📦 Syncing domain.TrustProfile schema...")
@@ -119,6 +139,25 @@ func main() {
 		log.Fatalf("❌ Failed to migrate ScoreComponent: %v", err)
 	}
 
+	log.Println("📦 Syncing domain.BuyerProfile schema...")
+	if err := db.AutoMigrate(&domain.BuyerProfile{}); err != nil {
+		log.Fatalf("❌ Failed to migrate BuyerProfile: %v", err)
+	}
+
+	log.Println("📦 Syncing domain.BuyerLoyaltySnapshot schema...")
+	if err := db.AutoMigrate(&domain.BuyerLoyaltySnapshot{}); err != nil {
+		log.Fatalf("❌ Failed to migrate BuyerLoyaltySnapshot: %v", err)
+	}
+
+	log.Println("📦 Running raw migration to configure BuyerLoyaltySnapshot unique index...")
+	uniqueIndexSQL := `
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_buyer_loyalty_snapshots_merchant_date 
+		ON buyer_loyalty_snapshots (merchant_id, (period_end_at::date));
+	`
+	if err := db.Exec(uniqueIndexSQL).Error; err != nil {
+		log.Fatalf("❌ Failed to migrate BuyerLoyaltySnapshot unique index: %v", err)
+	}
+
 	log.Println("📦 Syncing domain.CatalogProduct schema...")
 	if err := db.AutoMigrate(&domain.CatalogProduct{}); err != nil {
 		log.Fatalf("❌ Failed to migrate CatalogProduct: %v", err)
@@ -127,6 +166,22 @@ func main() {
 	log.Println("📦 Syncing domain.Order schema...")
 	if err := db.AutoMigrate(&domain.Order{}); err != nil {
 		log.Fatalf("❌ Failed to migrate Order: %v", err)
+	}
+
+	log.Println("📦 Running raw migration to configure order buyer columns...")
+	alterOrderSQL := `
+		ALTER TABLE orders ADD COLUMN IF NOT EXISTS buyer_phone_normalized VARCHAR(100) NOT NULL DEFAULT '';
+		ALTER TABLE orders ADD COLUMN IF NOT EXISTS buyer_email VARCHAR(200) NOT NULL DEFAULT '';
+		ALTER TABLE orders ADD COLUMN IF NOT EXISTS outcome VARCHAR(50) NOT NULL DEFAULT '';
+		ALTER TABLE orders ADD COLUMN IF NOT EXISTS fulfillment_status VARCHAR(100) NOT NULL DEFAULT '';
+		ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_method VARCHAR(50) NOT NULL DEFAULT '';
+		ALTER TABLE orders ADD COLUMN IF NOT EXISTS order_value_paise INT NOT NULL DEFAULT 0;
+		ALTER TABLE orders ADD COLUMN IF NOT EXISTS shipping_address_pincode VARCHAR(20) NOT NULL DEFAULT '';
+		ALTER TABLE orders ADD COLUMN IF NOT EXISTS city VARCHAR(100) NOT NULL DEFAULT '';
+		ALTER TABLE orders ADD COLUMN IF NOT EXISTS state VARCHAR(100) NOT NULL DEFAULT '';
+	`
+	if err := db.Exec(alterOrderSQL).Error; err != nil {
+		log.Fatalf("❌ Failed to migrate Order buyer columns: %v", err)
 	}
 
 	log.Println("📦 Syncing domain.OrderLineItem schema...")

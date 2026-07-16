@@ -121,8 +121,11 @@ func main() {
 	// 4. THE ROUTES
 	// ==========================================
 
-	// Public Onboarding Routes (Shopify & WooCommerce OAuth)
 	app.Post("/v1/merchants/register", ipLimiter, onboardingHandler.RegisterMerchant)
+	app.Patch("/v1/merchants/settings",
+		middleware.RequireAPIKey(postgresClient, redisClient),
+		onboardingHandler.UpdateSettings,
+	)
 	app.Get("/auth/shopify/install", ipLimiter, oauthHandler.HandleShopifyInstall)
 	app.Get("/auth/shopify/callback", ipLimiter, oauthHandler.HandleShopifyCallback)
 	app.Get("/auth/woocommerce/start", ipLimiter, oauthHandler.HandleWooCommerceAuthStart)
@@ -172,6 +175,11 @@ func main() {
 		analyticsHandler.GetMerchantInsights,
 	)
 
+	app.Get("/v1/merchants/buyer-intelligence",
+		middleware.RequireAPIKey(postgresClient, redisClient),
+		analyticsHandler.GetBuyerIntelligence,
+	)
+
 	// Score API Endpoints
 	app.Get("/v1/merchants/:id/scores",
 		middleware.RequireAPIKey(postgresClient, redisClient),
@@ -203,6 +211,20 @@ func main() {
 	app.Post("/v1/billing/module/verify",
 		middleware.RequireAPIKey(postgresClient, redisClient),
 		billingHandler.VerifyModulePurchase,
+	)
+
+	// Self-Serve Subscription Management
+	app.Post("/v1/billing/subscription/activate",
+		middleware.RequireAPIKey(postgresClient, redisClient),
+		billingHandler.ActivateSubscription,
+	)
+	app.Post("/v1/billing/subscription/upgrade",
+		middleware.RequireAPIKey(postgresClient, redisClient),
+		billingHandler.UpgradeSubscription,
+	)
+	app.Post("/v1/billing/subscription/cancel",
+		middleware.RequireAPIKey(postgresClient, redisClient),
+		billingHandler.CancelSubscription,
 	)
 
 	// DOOR C: Private Admin Backdoor 

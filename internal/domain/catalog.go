@@ -32,12 +32,21 @@ type CatalogProduct struct {
 }
 
 type Order struct {
-	ID             uuid.UUID `gorm:"type:uuid;primaryKey"`
-	MerchantID     uuid.UUID `gorm:"type:uuid;index;not null"`
-	OrderNumber    string    `gorm:"index;not null"`
-	DeliveryStatus string    `gorm:"default:''"`
-	NDRAttempts    int       `gorm:"default:0"`
-	CreatedAt      time.Time `gorm:"index"`
+	ID                   uuid.UUID `gorm:"type:uuid;primaryKey"`
+	MerchantID           uuid.UUID `gorm:"type:uuid;index;not null"`
+	OrderNumber          string    `gorm:"index;not null"`
+	DeliveryStatus       string    `gorm:"default:''"`
+	NDRAttempts          int       `gorm:"default:0"`
+	CreatedAt            time.Time `gorm:"index"`
+	BuyerPhoneNormalized   string    `gorm:"index;default:''" json:"buyer_phone_normalized"`
+	BuyerEmail             string    `gorm:"index;default:''" json:"buyer_email"`
+	Outcome                string    `gorm:"default:''" json:"outcome"`
+	FulfillmentStatus      string    `gorm:"default:''" json:"fulfillment_status"`
+	PaymentMethod          string    `gorm:"default:''" json:"payment_method"`
+	OrderValuePaise        int       `gorm:"default:0" json:"order_value_paise"`
+	ShippingAddressPincode string    `gorm:"default:''" json:"shipping_address_pincode"`
+	City                   string    `gorm:"default:''" json:"city"`
+	State                  string    `gorm:"default:''" json:"state"`
 }
 
 type OrderLineItem struct {

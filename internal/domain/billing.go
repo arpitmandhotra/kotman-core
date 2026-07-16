@@ -6,6 +6,14 @@ import (
 	"gorm.io/gorm"
 )
 
+const (
+	GrowthMonthlyPaise        = 699900
+	GrowthAdsMonthlyPaise     = 899900
+	WhatsAppMonthlyCapPaise   = 200000
+	CAPIStandaloneValuePaise  = 299900
+	CostPerRTOINR             = 210
+)
+
 type BillableEvent struct {
 	gorm.Model
 	MerchantID      string     `gorm:"uniqueIndex:idx_merchant_platform_order;not null"`
@@ -72,13 +80,13 @@ func KaughtmanFee(orderValuePaise int) int {
 	case orderValuePaise <= 100000:
 		return 750 // ≤ ₹1,000 → ₹7.50
 	case orderValuePaise <= 200000:
-		return 1000 // ≤ ₹2,000 → ₹10.00
+		return 1500 // ≤ ₹2,000 → ₹15.00
 	case orderValuePaise <= 300000:
 		return 2000 // ≤ ₹3,000 → ₹20.00
 	case orderValuePaise <= 400000:
-		return 3000 // ≤ ₹4,000 → ₹30.00
+		return 2500 // ≤ ₹4,000 → ₹25.00
 	case orderValuePaise <= 500000:
-		return 4000 // ≤ ₹5,000 → ₹40.00
+		return 3000 // ≤ ₹5,000 → ₹30.00
 	case orderValuePaise <= 1000000:
 		return 5000 // ≤ ₹10,000 → ₹50.00
 	default:
