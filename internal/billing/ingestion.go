@@ -436,7 +436,7 @@ func ProcessInboundOrder(ctx context.Context, platform string, merchantID string
 			DeliveryStatus:       "pending",
 			NDRAttempts:          0,
 			CreatedAt:            time.Now(),
-			BuyerPhoneNormalized: crypto.NormalisePhone(rawPhone),
+			BuyerPhoneNormalized: crypto.HashPhone(rawPhone),
 			BuyerEmail:           strings.ToLower(strings.TrimSpace(email)),
 			Outcome:              outcome,
 		}
@@ -446,7 +446,7 @@ func ProcessInboundOrder(ctx context.Context, platform string, merchantID string
 		}
 
 		if rawPhone != "" {
-			phoneNormalized := crypto.NormalisePhone(rawPhone)
+			phoneNormalized := crypto.HashPhone(rawPhone)
 			var bp domain.BuyerProfile
 			err := DB.WithContext(ctx).Where("phone_normalized = ?", phoneNormalized).First(&bp).Error
 			if err != nil {

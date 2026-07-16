@@ -61,7 +61,7 @@ func TestComputeMerchantLoyalty(t *testing.T) {
 	now := time.Now().UTC()
 	for i := 1; i <= 55; i++ {
 		phone := fmt.Sprintf("+919000000%03d", i)
-		phoneNorm := crypto.NormalisePhone(phone)
+		phoneNorm := crypto.HashPhone(phone)
 		email := fmt.Sprintf("buyer%d@example.com", i)
 
 		orderDaysAgo := -10
@@ -105,7 +105,7 @@ func TestComputeMerchantLoyalty(t *testing.T) {
 	// Seed buyer profile for one repeat buyer with 0 RTOs, one repeat buyer with 1 RTO
 	bp1 := domain.BuyerProfile{
 		ID:                 uuid.New(),
-		PhoneNormalized:    crypto.NormalisePhone("+919000000001"),
+		PhoneNormalized:    crypto.HashPhone("+919000000001"),
 		NetworkTotalOrders: 2,
 		NetworkRTOCount:    0,
 		LastUpdatedAt:      now,
@@ -116,7 +116,7 @@ func TestComputeMerchantLoyalty(t *testing.T) {
 
 	bp2 := domain.BuyerProfile{
 		ID:                 uuid.New(),
-		PhoneNormalized:    crypto.NormalisePhone("+919000000002"),
+		PhoneNormalized:    crypto.HashPhone("+919000000002"),
 		NetworkTotalOrders: 4,
 		NetworkRTOCount:    2, // abuser with 2 RTOs out of 4 orders (>40% RTO rate)
 		LastUpdatedAt:      now,
@@ -131,7 +131,7 @@ func TestComputeMerchantLoyalty(t *testing.T) {
 		MerchantID:           merchantID,
 		OrderNumber:          "ORD-RTO-1",
 		CreatedAt:            now.AddDate(0, 0, -4),
-		BuyerPhoneNormalized: crypto.NormalisePhone("+919000000002"),
+		BuyerPhoneNormalized: crypto.HashPhone("+919000000002"),
 		Outcome:              "RTO",
 	}
 	if err := db.Create(&abuserOrderRTO).Error; err != nil {
