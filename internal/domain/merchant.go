@@ -10,6 +10,7 @@ type Merchant struct {
 	APIKeyHash string `gorm:"uniqueIndex;not null"`
 
 	Platform  string `gorm:"not null;default:'shopify'"`
+	MagentoBaseURL string `gorm:"default:''"`
 	// --- V2 ONBOARDING UPGRADES ---
 	IsActive  bool      `gorm:"default:true"` // Allows us to disable bad merchants
 	
@@ -49,6 +50,8 @@ type Merchant struct {
 	BackfillHorizonAt     time.Time              `json:"backfill_horizon_at"`
 	BackfillErrorMessage  string                 `json:"backfill_error_message"`
 	ShopifyCreatedAt      *time.Time             `json:"shopify_created_at"`
+	WooCreatedAt          *time.Time             `json:"woo_created_at"`
+	MagentoCreatedAt      *time.Time             `json:"magento_created_at"`
 }
 
 type MerchantBackfillStatus string

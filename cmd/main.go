@@ -134,6 +134,10 @@ func main() {
 	app.Get("/auth/woocommerce/start", ipLimiter, oauthHandler.HandleWooCommerceAuthStart)
 	app.Post("/auth/woocommerce/callback", ipLimiter, oauthHandler.HandleWooCommerceCallback)
 	app.Get("/auth/woocommerce/return", ipLimiter, oauthHandler.HandleWooCommerceReturn)
+	app.Post("/v1/integrations/magento/connect",
+		middleware.RequireAPIKey(postgresClient, redisClient),
+		oauthHandler.HandleMagentoConnect,
+	)
 
 	// DOOR B: The Omni-Channel Webhook Listeners
 	webhookGroup := app.Group("/v1/webhooks")

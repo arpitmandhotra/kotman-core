@@ -85,6 +85,9 @@ func NewPostgresClient() *gorm.DB {
 		ALTER TABLE merchants ADD COLUMN IF NOT EXISTS backfill_horizon_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT '1970-01-01 00:00:00+00';
 		ALTER TABLE merchants ADD COLUMN IF NOT EXISTS backfill_error_message TEXT NOT NULL DEFAULT '';
 		ALTER TABLE merchants ADD COLUMN IF NOT EXISTS shopify_created_at TIMESTAMP WITH TIME ZONE;
+		ALTER TABLE merchants ADD COLUMN IF NOT EXISTS woo_created_at TIMESTAMP WITH TIME ZONE;
+		ALTER TABLE merchants ADD COLUMN IF NOT EXISTS magento_created_at TIMESTAMP WITH TIME ZONE;
+		ALTER TABLE merchants ADD COLUMN IF NOT EXISTS magento_base_url VARCHAR(255) NOT NULL DEFAULT '';
 	`
 	if err := db.Exec(alterMerchantSQL).Error; err != nil {
 		log.Fatalf("Failed to migrate Merchant tier columns and constraints: %v", err)

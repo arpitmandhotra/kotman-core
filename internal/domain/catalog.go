@@ -11,6 +11,7 @@ type PlatformType string
 const (
 	PlatformShopify     PlatformType = "SHOPIFY"
 	PlatformWooCommerce PlatformType = "WOOCOMMERCE"
+	PlatformMagento     PlatformType = "MAGENTO"
 )
 
 // Decimal maps float64 value directly to numeric database columns.

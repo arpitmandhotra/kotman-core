@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/arpitmandhotra/api-integrator/internal/catalog"
 	"github.com/arpitmandhotra/api-integrator/internal/crypto"
 	"github.com/arpitmandhotra/api-integrator/internal/database"
 	"github.com/arpitmandhotra/api-integrator/internal/domain"
@@ -23,6 +24,7 @@ import (
 	"golang.org/x/time/rate"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
+	"net/url"
 )
 
 // TokenBucket implements a thread-safe token bucket rate limiter.
@@ -997,6 +999,878 @@ func RunWooCommerceBackfill(ctx context.Context, merchantID string, db *gorm.DB,
 		"backfill_completed_at": &nowDone,
 		"backfill_order_count":  totalProcessed,
 	})
+
+	return nil
+}
+
+type MagentoOrder struct {
+	EntityID            int               `json:"entity_id"`
+	IncrementID         string            `json:"increment_id"`
+	CreatedAt           string            `json:"created_at"`
+	Status              string            `json:"status"`
+	GrandTotal          float64           `json:"grand_total"`
+	TotalPaid           float64           `json:"total_paid"`
+	TotalRefunded       float64           `json:"total_refunded"`
+	CustomerEmail       string            `json:"customer_email"`
+	CustomerFirstname   string            `json:"customer_firstname"`
+	CustomerLastname    string            `json:"customer_lastname"`
+	BillingAddress      MagentoAddress    `json:"billing_address"`
+	ExtensionAttributes struct {
+		ShippingAssignments []struct {
+			Shipping struct {
+				Address MagentoAddress `json:"address"`
+			} `json:"shipping"`
+		} `json:"shipping_assignments"`
+	} `json:"extension_attributes"`
+	Payment struct {
+		Method string `json:"method"`
+	} `json:"payment"`
+	Items []MagentoOrderItem `json:"items"`
+}
+
+type MagentoAddress struct {
+	Firstname  string   `json:"firstname"`
+	Lastname   string   `json:"lastname"`
+	Street     []string `json:"street"`
+	City       string   `json:"city"`
+	Postcode   string   `json:"postcode"`
+	RegionCode string   `json:"region_code"`
+	Telephone  string   `json:"telephone"`
+}
+
+type MagentoOrderItem struct {
+	ItemID      int     `json:"item_id"`
+	SKU         string  `json:"sku"`
+	Name        string  `json:"name"`
+	ProductID   int     `json:"product_id"`
+	ProductType string  `json:"product_type"`
+	QtyOrdered  float64 `json:"qty_ordered"`
+	QtyInvoiced float64 `json:"qty_invoiced"`
+	QtyShipped  float64 `json:"qty_shipped"`
+	QtyRefunded float64 `json:"qty_refunded"`
+	RowTotal    float64 `json:"row_total"`
+}
+
+type MagentoProduct struct {
+	ID               int    `json:"id"`
+	SKU              string `json:"sku"`
+	Name             string `json:"name"`
+	Price            float64 `json:"price"`
+	TypeID           string `json:"type_id"`
+	CustomAttributes []struct {
+		AttributeCode string      `json:"attribute_code"`
+		Value         interface{} `json:"value"`
+	} `json:"custom_attributes"`
+}
+
+func IsMagentoCOD(paymentMethod string) bool {
+	return paymentMethod == "cashondelivery" ||
+		paymentMethod == "cod" ||
+		strings.Contains(strings.ToLower(paymentMethod), "cash")
+}
+
+func MapMagentoStatus(status string) string {
+	switch status {
+	case "complete":
+		return "DELIVERED"
+	case "canceled":
+		return "CANCELLED"
+	case "closed":
+		return "RTO"
+	case "pending", "pending_payment", "processing":
+		return "PENDING"
+	default:
+		return "PENDING"
+	}
+}
+
+type BackfillQueue struct {
+	Platform string
+}
+
+func (q *BackfillQueue) Enqueue(ctx context.Context, merchantID string) error {
+	go func() {
+		bgCtx, cancel := context.WithTimeout(context.Background(), 60*time.Minute)
+		defer cancel()
+
+		db := database.NewPostgresClient()
+		rdb := database.NewRedisClient()
+		defer rdb.Close()
+
+		slog.Info("starting enqueued backfill job", "platform", q.Platform, "merchant_id", merchantID)
+		var err error
+
+		if q.Platform == "shopify" {
+			var cred domain.PlatformCredential
+			if err = db.Where("merchant_id = ? AND platform = ? AND is_active = ?", merchantID, "shopify", true).First(&cred).Error; err == nil {
+				token, _ := crypto.DecryptToken(cred.AccessTokenEncrypted)
+				catalogJob := catalog.NewCatalogBackfillJob(db, rdb)
+				merchantUUID := uuid.MustParse(merchantID)
+				_ = catalogJob.RunBackfill(bgCtx, merchantUUID, cred.ShopDomain, token)
+			}
+			err = RunShopifyBackfill(bgCtx, merchantID)
+		} else if q.Platform == "woocommerce" {
+			err = RunWooCommerceCatalogBackfill(bgCtx, merchantID, db, rdb)
+			if err == nil {
+				err = RunWooCommerceBackfill(bgCtx, merchantID, db, rdb)
+			}
+		} else if q.Platform == "magento" {
+			err = RunMagentoCatalogBackfill(bgCtx, merchantID, db, rdb)
+			if err == nil {
+				err = RunMagentoBackfill(bgCtx, merchantID, db, rdb)
+			}
+		}
+
+		if err != nil {
+			slog.Error("enqueued backfill job failed", "platform", q.Platform, "merchant_id", merchantID, "error", err)
+			nowErr := time.Now().UTC()
+			db.Model(&domain.Merchant{}).Where("id = ?", merchantID).Updates(map[string]interface{}{
+				"backfill_status":        domain.BackfillFailed,
+				"backfill_error_message": err.Error(),
+				"backfill_completed_at":  &nowErr,
+			})
+		}
+	}()
+	return nil
+}
+
+var ShopifyBackfillQueue = &BackfillQueue{Platform: "shopify"}
+var WooBackfillQueue = &BackfillQueue{Platform: "woocommerce"}
+var MagentoBackfillQueue = &BackfillQueue{Platform: "magento"}
+
+func TriggerPlatformOnboarding(ctx context.Context, merchant *domain.Merchant, oldestOrderDate time.Time) error {
+	db := database.NewPostgresClient()
+
+	merchant.BackfillStatus = domain.BackfillPending
+	now := time.Now().UTC()
+	merchant.BackfillStartedAt = &now
+	merchant.BackfillHorizonAt = backfillStartDate(oldestOrderDate)
+
+	if err := db.Save(merchant).Error; err != nil {
+		return fmt.Errorf("saving backfill state: %w", err)
+	}
+
+	switch merchant.Platform {
+	case "shopify":
+		return ShopifyBackfillQueue.Enqueue(ctx, merchant.ID)
+	case "woocommerce":
+		return WooBackfillQueue.Enqueue(ctx, merchant.ID)
+	case "magento":
+		return MagentoBackfillQueue.Enqueue(ctx, merchant.ID)
+	}
+	return nil
+}
+
+func FetchWooOldestOrderDate(ctx context.Context, shopDomain, key, secret string) (time.Time, error) {
+	reqURL := fmt.Sprintf("%s/wp-json/wc/v3/orders?orderby=date&order=asc&per_page=1&page=1", shopDomain)
+	signedURL, err := woocommerce.SignRequest(http.MethodGet, reqURL, key, secret)
+	if err != nil {
+		return time.Now().UTC(), err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, signedURL, nil)
+	if err != nil {
+		return time.Now().UTC(), err
+	}
+
+	resp, err := backfillHttpClient.Do(req)
+	if err != nil {
+		return time.Now().UTC(), err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return time.Now().UTC(), fmt.Errorf("failed to fetch oldest order from WooCommerce: status %s", resp.Status)
+	}
+
+	var orders []struct {
+		DateCreated string `json:"date_created"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&orders); err != nil {
+		return time.Now().UTC(), err
+	}
+
+	if len(orders) == 0 {
+		return time.Now().UTC(), nil
+	}
+
+	parsedTime, err := time.Parse("2006-01-02T15:04:05", orders[0].DateCreated)
+	if err != nil {
+		parsedTime, err = time.Parse(time.RFC3339, orders[0].DateCreated)
+	}
+	if err != nil {
+		return time.Now().UTC(), err
+	}
+
+	return parsedTime, nil
+}
+
+func FetchMagentoOldestOrderDate(ctx context.Context, storeURL, token string) (time.Time, error) {
+	reqURL := fmt.Sprintf("%s/rest/V1/orders?searchCriteria[sortOrders][0][field]=created_at&searchCriteria[sortOrders][0][direction]=ASC&searchCriteria[pageSize]=1&searchCriteria[currentPage]=1", storeURL)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return time.Now().UTC(), err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := backfillHttpClient.Do(req)
+	if err != nil {
+		return time.Now().UTC(), err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return time.Now().UTC(), fmt.Errorf("failed to fetch oldest order from Magento: status %s", resp.Status)
+	}
+
+	var payload struct {
+		Items []struct {
+			CreatedAt string `json:"created_at"`
+		} `json:"items"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return time.Now().UTC(), err
+	}
+
+	if len(payload.Items) == 0 {
+		return time.Now().UTC(), nil
+	}
+
+	parsedTime, err := time.Parse("2006-01-02 15:04:05", payload.Items[0].CreatedAt)
+	if err != nil {
+		parsedTime, err = time.Parse(time.RFC3339, payload.Items[0].CreatedAt)
+	}
+	if err != nil {
+		return time.Now().UTC(), err
+	}
+
+	return parsedTime, nil
+}
+
+func VerifyMagentoConnection(ctx context.Context, storeURL, accessToken string) (string, string, error) {
+	storeURL = strings.TrimSuffix(storeURL, "/")
+	if !strings.HasPrefix(storeURL, "https://") && !strings.HasPrefix(storeURL, "http://") {
+		storeURL = "https://" + storeURL
+	}
+	u, err := url.Parse(storeURL)
+	if err != nil || u.Scheme != "https" {
+		return "", "", fmt.Errorf("Magento stores must use HTTPS secure connection")
+	}
+
+	reqURL := fmt.Sprintf("%s/rest/V1/store/storeConfigs", storeURL)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return "", "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to connect to Magento: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return "", "", fmt.Errorf("Magento 1 is explicitly NOT supported. Please ensure you are running Magento 2")
+	}
+
+	if resp.StatusCode == http.StatusUnauthorized {
+		return "", "", fmt.Errorf("Invalid token — please check your Integration credentials in Magento admin.")
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return "", "", fmt.Errorf("Magento API returned unexpected status %s", resp.Status)
+	}
+
+	var configs []struct {
+		Name string `json:"name"`
+		Code string `json:"code"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&configs); err != nil {
+		return "", "", fmt.Errorf("invalid response format from Magento 2. Please check if Magento 2 REST API is enabled")
+	}
+
+	if len(configs) == 0 {
+		return "", "", fmt.Errorf("no store configurations found")
+	}
+
+	magentoVersion := "2.x"
+	return configs[0].Name, magentoVersion, nil
+}
+
+type MagentoCategory struct {
+	ID       int    `json:"id"`
+	ParentID int    `json:"parent_id"`
+	Name     string `json:"name"`
+	Level    int    `json:"level"`
+}
+
+func resolveMagentoCategoryChain(ctx context.Context, categoryID int, cred *domain.PlatformCredential, token string, limiter *rate.Limiter, cache map[int]MagentoCategory) {
+	if _, exists := cache[categoryID]; exists {
+		return
+	}
+
+	limiter.Wait(ctx)
+	reqURL := fmt.Sprintf("%s/rest/V1/categories/%d", cred.ShopDomain, categoryID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := backfillHttpClient.Do(req)
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return
+	}
+
+	var cat MagentoCategory
+	if err := json.NewDecoder(resp.Body).Decode(&cat); err != nil {
+		return
+	}
+
+	cache[categoryID] = cat
+
+	if cat.ParentID > 1 {
+		resolveMagentoCategoryChain(ctx, cat.ParentID, cred, token, limiter, cache)
+	}
+}
+
+func getCategoryL1L2FromIds(ctx context.Context, categoryIDs []int, cred *domain.PlatformCredential, token string, limiter *rate.Limiter, cache map[int]MagentoCategory) (string, string) {
+	for _, cid := range categoryIDs {
+		resolveMagentoCategoryChain(ctx, cid, cred, token, limiter, cache)
+	}
+
+	catL1 := ""
+	catL2 := ""
+
+	for _, cid := range categoryIDs {
+		curr, exists := cache[cid]
+		if !exists {
+			continue
+		}
+
+		for {
+			if curr.Level == 2 {
+				if catL1 == "" {
+					catL1 = curr.Name
+				}
+			} else if curr.Level == 3 {
+				if catL2 == "" {
+					catL2 = curr.Name
+				}
+				if p, ok := cache[curr.ParentID]; ok && p.Level == 2 {
+					if catL1 == "" {
+						catL1 = p.Name
+					}
+				}
+			}
+
+			if curr.ParentID <= 1 {
+				break
+			}
+			next, ok := cache[curr.ParentID]
+			if !ok {
+				break
+			}
+			curr = next
+		}
+	}
+
+	if catL1 == "" {
+		catL1 = "Uncategorised"
+		slog.Warn("no Magento category configured for product, defaulting to Uncategorised")
+	}
+	return catL1, catL2
+}
+
+func RunMagentoCatalogBackfill(ctx context.Context, merchantID string, db *gorm.DB, rdb *redis.Client) error {
+	var cred domain.PlatformCredential
+	if err := db.Where("merchant_id = ? AND platform = ? AND is_active = ?", merchantID, "magento", true).First(&cred).Error; err != nil {
+		return fmt.Errorf("failed to fetch Magento credentials: %w", err)
+	}
+
+	token, err := crypto.DecryptToken(cred.IntegrationTokenEncrypted)
+	if err != nil {
+		return fmt.Errorf("failed to decrypt integration token: %w", err)
+	}
+
+	limiter := rate.NewLimiter(rate.Limit(2), 10)
+	page := 1
+	categoryCache := make(map[int]MagentoCategory)
+
+	for {
+		if err := limiter.Wait(ctx); err != nil {
+			return err
+		}
+
+		reqURL := fmt.Sprintf("%s/rest/V1/products?searchCriteria[pageSize]=100&searchCriteria[currentPage]=%d", cred.ShopDomain, page)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := backfillHttpClient.Do(req)
+		if err != nil {
+			return err
+		}
+
+		var payload struct {
+			Items      []MagentoProduct `json:"items"`
+			TotalCount int              `json:"total_count"`
+		}
+
+		err = json.NewDecoder(io.LimitReader(resp.Body, 15<<20)).Decode(&payload)
+		resp.Body.Close()
+		if err != nil {
+			return err
+		}
+
+		if len(payload.Items) == 0 {
+			break
+		}
+
+		for _, p := range payload.Items {
+			var categoryIDs []int
+			for _, attr := range p.CustomAttributes {
+				if attr.AttributeCode == "category_ids" {
+					switch v := attr.Value.(type) {
+					case []interface{}:
+						for _, item := range v {
+							if strVal, ok := item.(string); ok {
+								if id, err := strconv.Atoi(strVal); err == nil {
+									categoryIDs = append(categoryIDs, id)
+								}
+							} else if floatVal, ok := item.(float64); ok {
+								categoryIDs = append(categoryIDs, int(floatVal))
+							}
+						}
+					case string:
+						parts := strings.Split(v, ",")
+						for _, part := range parts {
+							trimmed := strings.TrimSpace(part)
+							if id, err := strconv.Atoi(trimmed); err == nil {
+								categoryIDs = append(categoryIDs, id)
+							}
+						}
+					}
+				}
+			}
+
+			categoryL1, categoryL2 := getCategoryL1L2FromIds(ctx, categoryIDs, &cred, token, limiter, categoryCache)
+
+			merchantUUID := uuid.MustParse(merchantID)
+
+			catProd := domain.CatalogProduct{
+				ID:                uuid.New(),
+				MerchantID:        merchantUUID,
+				Platform:          domain.PlatformMagento,
+				PlatformProductID: strconv.Itoa(p.ID),
+				PlatformVariantID: strconv.Itoa(p.ID),
+				SKU:               p.SKU,
+				Title:             p.Name,
+				CategoryL1:        categoryL1,
+				CategoryL2:        categoryL2,
+				Price:             domain.Decimal(p.Price),
+				LastSyncedAt:      time.Now().UTC(),
+			}
+
+			db.Clauses(clause.OnConflict{
+				Columns:   []clause.Column{{Name: "merchant_id"}, {Name: "platform"}, {Name: "platform_variant_id"}},
+				DoUpdates: clause.AssignmentColumns([]string{"sku", "title", "category_l1", "category_l2", "price", "last_synced_at"}),
+			}).Create(&catProd)
+		}
+
+		if page*100 >= payload.TotalCount {
+			break
+		}
+		page++
+	}
+
+	return nil
+}
+
+func RunMagentoBackfill(ctx context.Context, merchantID string, db *gorm.DB, rdb *redis.Client) error {
+	var merchant domain.Merchant
+	if err := db.First(&merchant, "id = ?", merchantID).Error; err != nil {
+		return err
+	}
+
+	var cred domain.PlatformCredential
+	if err := db.Where("merchant_id = ? AND platform = ? AND is_active = ?", merchantID, "magento", true).First(&cred).Error; err != nil {
+		return fmt.Errorf("failed to fetch Magento credentials: %w", err)
+	}
+
+	token, err := crypto.DecryptToken(cred.IntegrationTokenEncrypted)
+	if err != nil {
+		return fmt.Errorf("failed to decrypt integration token: %w", err)
+	}
+
+	startDate := backfillStartDate(merchant.CreatedAt)
+	checkpointKey := fmt.Sprintf("magento:backfill:checkpoint:%s", merchantID)
+
+	if val, err := rdb.Get(ctx, checkpointKey).Result(); err == nil && val != "" {
+		if parsedTime, err := time.Parse(time.RFC3339, val); err == nil {
+			startDate = parsedTime
+		}
+	}
+
+	now := time.Now().UTC()
+	db.Model(&merchant).Updates(map[string]interface{}{
+		"backfill_status":     domain.BackfillInProgress,
+		"backfill_started_at": &now,
+		"backfill_horizon_at": startDate,
+	})
+
+	limiter := rate.NewLimiter(rate.Limit(2), 10)
+
+	page := 1
+	totalProcessed := merchant.BackfillOrderCount
+	pincodeRepo := database.NewPincodeRepository(db, rdb)
+
+	for {
+		if err := limiter.Wait(ctx); err != nil {
+			return err
+		}
+
+		startDateStr := startDate.Format("2006-01-02 15:04:05")
+		reqURL := fmt.Sprintf("%s/rest/V1/orders?searchCriteria[filter_groups][0][filters][0][field]=created_at&searchCriteria[filter_groups][0][filters][0][value]=%s&searchCriteria[filter_groups][0][filters][0][condition_type]=gteq&searchCriteria[sortOrders][0][field]=created_at&searchCriteria[sortOrders][0][direction]=ASC&searchCriteria[pageSize]=100&searchCriteria[currentPage]=%d",
+			cred.ShopDomain, url.QueryEscape(startDateStr), page)
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := backfillHttpClient.Do(req)
+		if err != nil {
+			return err
+		}
+
+		var payload struct {
+			Items      []MagentoOrder `json:"items"`
+			TotalCount int            `json:"total_count"`
+		}
+
+		err = json.NewDecoder(io.LimitReader(resp.Body, 15<<20)).Decode(&payload)
+		resp.Body.Close()
+		if err != nil {
+			return err
+		}
+
+		if len(payload.Items) == 0 {
+			break
+		}
+
+		for _, o := range payload.Items {
+			phone := o.BillingAddress.Telephone
+			if phone == "" && len(o.ExtensionAttributes.ShippingAssignments) > 0 {
+				phone = o.ExtensionAttributes.ShippingAssignments[0].Shipping.Address.Telephone
+			}
+
+			cleanPhone, phoneValid := validateIndianMobilePhone(phone)
+			if !phoneValid {
+				orderIDStr := strconv.Itoa(o.EntityID)
+				var existing domain.BackfilledOrder
+				if db.Where("merchant_id = ? AND order_id = ?", merchantID, orderIDStr).First(&existing).Error != nil {
+					db.Create(&domain.BackfilledOrder{
+						MerchantID: merchantID,
+						Platform:   "magento",
+						OrderID:    orderIDStr,
+					})
+					totalProcessed++
+				}
+				continue
+			}
+
+			hash := crypto.HashPhone(cleanPhone)
+			orderIDStr := strconv.Itoa(o.EntityID)
+
+			var existing domain.BackfilledOrder
+			if db.Where("merchant_id = ? AND order_id = ?", merchantID, orderIDStr).First(&existing).Error == nil {
+				continue
+			}
+
+			db.Create(&domain.BackfilledOrder{
+				MerchantID: merchantID,
+				Platform:   "magento",
+				OrderID:    orderIDStr,
+			})
+
+			orderCreatedAt, err := time.Parse("2006-01-02 15:04:05", o.CreatedAt)
+			if err != nil {
+				orderCreatedAt, _ = time.Parse(time.RFC3339, o.CreatedAt)
+			}
+
+			outcome := MapMagentoStatus(o.Status)
+			paymentMethod := "prepaid"
+			if IsMagentoCOD(o.Payment.Method) {
+				paymentMethod = "cod"
+			}
+
+			pincode := o.BillingAddress.Postcode
+			city := o.BillingAddress.City
+			state := o.BillingAddress.RegionCode
+
+			if len(o.ExtensionAttributes.ShippingAssignments) > 0 {
+				shipAddr := o.ExtensionAttributes.ShippingAssignments[0].Shipping.Address
+				if pincode == "" {
+					pincode = shipAddr.Postcode
+				}
+				if city == "" {
+					city = shipAddr.City
+				}
+				if state == "" {
+					state = shipAddr.RegionCode
+				}
+			}
+
+			var geoState, geoTier, geoDistrict string
+			var geoLat, geoLng float64
+			geoTier = "TIER3"
+
+			if pincode != "" {
+				ref, err := pincodeRepo.GetPincodeInfo(ctx, pincode)
+				if err == nil && ref != nil {
+					geoState = ref.StateName
+					geoTier = ref.GeoTier
+					geoDistrict = ref.District
+					geoLat = ref.Latitude
+					geoLng = ref.Longitude
+				}
+			}
+
+			merchantUUID, _ := uuid.Parse(merchantID)
+			orderUUID := uuid.NewSHA1(merchantUUID, []byte(orderIDStr))
+
+			orderRecord := domain.Order{
+				ID:                     orderUUID,
+				MerchantID:             merchantUUID,
+				OrderNumber:            o.IncrementID,
+				DeliveryStatus:         o.Status,
+				NDRAttempts:            0,
+				CreatedAt:              orderCreatedAt,
+				BuyerPhoneNormalized:   hash,
+				BuyerEmail:             strings.ToLower(strings.TrimSpace(o.CustomerEmail)),
+				Outcome:                outcome,
+				FulfillmentStatus:      o.Status,
+				PaymentMethod:          paymentMethod,
+				OrderValuePaise:        int(o.GrandTotal * 100),
+				ShippingAddressPincode: pincode,
+				City:                   city,
+				State:                  state,
+				GeoState:               geoState,
+				GeoTier:                geoTier,
+				GeoDistrict:            geoDistrict,
+				GeoLatitude:            geoLat,
+				GeoLongitude:           geoLng,
+			}
+
+			db.Clauses(clause.OnConflict{
+				Columns:   []clause.Column{{Name: "id"}},
+				DoUpdates: clause.AssignmentColumns([]string{"fulfillment_status", "financial_status", "outcome", "updated_at"}),
+			}).Create(&orderRecord)
+
+			database.IncrementMetric(db, hash, "total_orders")
+			if outcome == "DELIVERED" {
+				database.IncrementMetric(db, hash, "successful_deliveries")
+			}
+			if outcome == "RTO" {
+				database.IncrementMetric(db, hash, "total_rtos")
+			}
+
+			totalProcessed++
+			rdb.Set(ctx, checkpointKey, o.CreatedAt, 24*time.Hour)
+
+			if totalProcessed%500 == 0 {
+				db.Model(&merchant).Update("backfill_order_count", totalProcessed)
+			}
+		}
+
+		if page*100 >= payload.TotalCount {
+			break
+		}
+		page++
+	}
+
+	rdb.Del(ctx, checkpointKey)
+
+	nowDone := time.Now().UTC()
+	db.Model(&merchant).Updates(map[string]interface{}{
+		"backfill_status":      domain.BackfillComplete,
+		"backfill_completed_at": &nowDone,
+		"backfill_order_count":  totalProcessed,
+	})
+
+	return nil
+}
+
+func RunWooCommerceCatalogBackfill(ctx context.Context, merchantID string, db *gorm.DB, rdb *redis.Client) error {
+	var cred domain.PlatformCredential
+	if err := db.Where("merchant_id = ? AND platform = ? AND is_active = ?", merchantID, "woocommerce", true).First(&cred).Error; err != nil {
+		return fmt.Errorf("failed to fetch WooCommerce credentials: %w", err)
+	}
+
+	key, err := crypto.DecryptToken(cred.ConsumerKeyEncrypted)
+	if err != nil {
+		return fmt.Errorf("failed to decrypt consumer key: %w", err)
+	}
+	secret, err := crypto.DecryptToken(cred.ConsumerSecretEncrypted)
+	if err != nil {
+		return fmt.Errorf("failed to decrypt consumer secret: %w", err)
+	}
+
+	limiter := rate.NewLimiter(rate.Limit(2), 40)
+	page := 1
+
+	for {
+		if err := limiter.Wait(ctx); err != nil {
+			return err
+		}
+
+		reqURL := fmt.Sprintf("%s/wp-json/wc/v3/products?per_page=100&page=%d&orderby=id&order=asc", cred.ShopDomain, page)
+		signedURL, err := woocommerce.SignRequest(http.MethodGet, reqURL, key, secret)
+		if err != nil {
+			return err
+		}
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, signedURL, nil)
+		if err != nil {
+			return err
+		}
+
+		resp, err := backfillHttpClient.Do(req)
+		if err != nil {
+			return err
+		}
+
+		var products []struct {
+			ID         int64  `json:"id"`
+			Name       string `json:"name"`
+			Type       string `json:"type"`
+			SKU        string `json:"sku"`
+			Price      string `json:"price"`
+			Categories []struct {
+				Name string `json:"name"`
+			} `json:"categories"`
+		}
+
+		err = json.NewDecoder(io.LimitReader(resp.Body, 10<<20)).Decode(&products)
+		resp.Body.Close()
+		if err != nil {
+			return err
+		}
+
+		if len(products) == 0 {
+			break
+		}
+
+		for _, p := range products {
+			categoryL1 := "Uncategorised"
+			categoryL2 := ""
+			if len(p.Categories) > 0 {
+				categoryL1 = p.Categories[0].Name
+				if len(p.Categories) > 1 {
+					categoryL2 = p.Categories[1].Name
+				}
+			}
+
+			priceVal := 0.0
+			if p.Price != "" {
+				priceVal, _ = strconv.ParseFloat(p.Price, 64)
+			}
+
+			merchantUUID := uuid.MustParse(merchantID)
+
+			if p.Type == "variable" {
+				var variations []struct {
+					ID    int64  `json:"id"`
+					SKU   string `json:"sku"`
+					Price string `json:"price"`
+				}
+
+				if err := limiter.Wait(ctx); err != nil {
+					return err
+				}
+
+				varReqURL := fmt.Sprintf("%s/wp-json/wc/v3/products/%d/variations?per_page=100", cred.ShopDomain, p.ID)
+				varSignedURL, err := woocommerce.SignRequest(http.MethodGet, varReqURL, key, secret)
+				if err == nil {
+					if varReq, err := http.NewRequestWithContext(ctx, http.MethodGet, varSignedURL, nil); err == nil {
+						if varResp, err := backfillHttpClient.Do(varReq); err == nil {
+							_ = json.NewDecoder(io.LimitReader(varResp.Body, 5<<20)).Decode(&variations)
+							varResp.Body.Close()
+						}
+					}
+				}
+
+				for _, v := range variations {
+					vPrice := priceVal
+					if v.Price != "" {
+						vPrice, _ = strconv.ParseFloat(v.Price, 64)
+					}
+
+					skuVal := v.SKU
+					if skuVal == "" {
+						skuVal = p.SKU
+					}
+
+					catProd := domain.CatalogProduct{
+						ID:                uuid.New(),
+						MerchantID:        merchantUUID,
+						Platform:          domain.PlatformWooCommerce,
+						PlatformProductID: strconv.FormatInt(p.ID, 10),
+						PlatformVariantID: strconv.FormatInt(v.ID, 10),
+						SKU:               skuVal,
+						Title:             p.Name,
+						CategoryL1:        categoryL1,
+						CategoryL2:        categoryL2,
+						Price:             domain.Decimal(vPrice),
+						LastSyncedAt:      time.Now().UTC(),
+					}
+
+					db.Clauses(clause.OnConflict{
+						Columns:   []clause.Column{{Name: "merchant_id"}, {Name: "platform"}, {Name: "platform_variant_id"}},
+						DoUpdates: clause.AssignmentColumns([]string{"sku", "title", "category_l1", "category_l2", "price", "last_synced_at"}),
+					}).Create(&catProd)
+				}
+			} else {
+				catProd := domain.CatalogProduct{
+					ID:                uuid.New(),
+					MerchantID:        merchantUUID,
+					Platform:          domain.PlatformWooCommerce,
+					PlatformProductID: strconv.FormatInt(p.ID, 10),
+					PlatformVariantID: strconv.FormatInt(p.ID, 10),
+					SKU:               p.SKU,
+					Title:             p.Name,
+					CategoryL1:        categoryL1,
+					CategoryL2:        categoryL2,
+					Price:             domain.Decimal(priceVal),
+					LastSyncedAt:      time.Now().UTC(),
+				}
+
+				db.Clauses(clause.OnConflict{
+					Columns:   []clause.Column{{Name: "merchant_id"}, {Name: "platform"}, {Name: "platform_variant_id"}},
+					DoUpdates: clause.AssignmentColumns([]string{"sku", "title", "category_l1", "category_l2", "price", "last_synced_at"}),
+				}).Create(&catProd)
+			}
+		}
+
+		page++
+	}
 
 	return nil
 }

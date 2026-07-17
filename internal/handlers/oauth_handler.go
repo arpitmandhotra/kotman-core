@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/arpitmandhotra/api-integrator/internal/crypto"
@@ -234,14 +235,14 @@ func (h *OAuthHandler) HandleShopifyCallback(c *fiber.Ctx) error {
 		})
 	}
 
-	// SIXTH: Kick off Shopify bulk operation backfill
-	go func() {
-		backfillCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-		defer cancel()
-		if backfillErr := backfill.RunShopifyBackfill(backfillCtx, merchant.ID); backfillErr != nil {
-			slog.Error("shopify bulk operation backfill initiation failed", "merchant_id", merchant.ID, "error", backfillErr)
-		}
-	}()
+	// SIXTH: Trigger platform onboarding (marks status, enqueues catalog & orders backfills)
+	shopifyCreatedVal := time.Now().UTC().AddDate(0, -domain.ORDER_BACKFILL_MONTHS, 0)
+	if merchant.ShopifyCreatedAt != nil {
+		shopifyCreatedVal = *merchant.ShopifyCreatedAt
+	}
+	if onboardingErr := backfill.TriggerPlatformOnboarding(ctx, &merchant, shopifyCreatedVal); onboardingErr != nil {
+		slog.Error("shopify onboarding initiation failed", "merchant_id", merchant.ID, "error", onboardingErr)
+	}
 
 	// Redirect to dashboard welcome screen with API key in URL fragment
 	welcomeURL := os.Getenv("DASHBOARD_WELCOME_URL")
@@ -432,14 +433,24 @@ func (h *OAuthHandler) HandleWooCommerceCallback(c *fiber.Ctx) error {
 	// Clean pending from Redis
 	h.redis.Del(ctx, pendingKey)
 
-	// Kick off historical backfill async
-	go func() {
-		backfillCtx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
-		defer cancel()
-		if backfillErr := backfill.BackfillOrderHistory(backfillCtx, merchantID, "woocommerce"); backfillErr != nil {
-			slog.Error("woocommerce historical order backfill failed", "merchant_id", merchantID, "error", backfillErr)
+	// Fetch oldest order date proxy for store age
+	wooOldestDate, oldestErr := backfill.FetchWooOldestOrderDate(ctx, expectedStoreURL, payload.ConsumerKey, payload.ConsumerSecret)
+	if oldestErr != nil {
+		slog.Warn("failed to fetch oldest WooCommerce order date, defaulting to now", "merchant_id", merchantID, "error", oldestErr)
+		wooOldestDate = time.Now().UTC()
+	}
+
+	// Fetch merchant and update WooCreatedAt
+	var updatedMerchant domain.Merchant
+	if err := h.pg.Where("id = ?", merchantID).First(&updatedMerchant).Error; err == nil {
+		updatedMerchant.WooCreatedAt = &wooOldestDate
+		_ = h.pg.Save(&updatedMerchant)
+
+		// Trigger onboarding
+		if onboardingErr := backfill.TriggerPlatformOnboarding(ctx, &updatedMerchant, wooOldestDate); onboardingErr != nil {
+			slog.Error("failed to enqueue WooCommerce backfill", "merchant_id", merchantID, "error", onboardingErr)
 		}
-	}()
+	}
 
 	return c.SendStatus(fiber.StatusOK)
 }
@@ -503,4 +514,135 @@ func fetchShopifyCreatedAt(ctx context.Context, shop, token string) (*time.Time,
 		return nil, err
 	}
 	return &t, nil
+}
+
+type MagentoConnectRequest struct {
+	StoreURL    string `json:"store_url"`
+	AccessToken string `json:"access_token"`
+}
+
+func (h *OAuthHandler) HandleMagentoConnect(c *fiber.Ctx) error {
+	ctx := c.UserContext()
+	merchantIDVal := c.Locals("kaughtman.merchant_id")
+	merchantID, ok := merchantIDVal.(string)
+	if !ok || merchantID == "" {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+			"success": false,
+			"error":   "unauthorized",
+		})
+	}
+
+	var req MagentoConnectRequest
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"success": false,
+			"error":   "invalid request body",
+		})
+	}
+
+	storeURL := strings.TrimSpace(req.StoreURL)
+	accessToken := strings.TrimSpace(req.AccessToken)
+	if storeURL == "" || accessToken == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"success": false,
+			"error":   "store_url and access_token are required",
+		})
+	}
+
+	storeURL = strings.TrimSuffix(storeURL, "/")
+	if !strings.HasPrefix(storeURL, "https://") && !strings.HasPrefix(storeURL, "http://") {
+		storeURL = "https://" + storeURL
+	}
+	u, err := url.Parse(storeURL)
+	if err != nil || u.Scheme != "https" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"success": false,
+			"error":   "Magento stores must use HTTPS secure connection",
+		})
+	}
+
+	storeName, magentoVersion, err := backfill.VerifyMagentoConnection(ctx, storeURL, accessToken)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"success":  false,
+			"error":    err.Error(),
+			"verified": false,
+		})
+	}
+
+	oldestOrderDate, err := backfill.FetchMagentoOldestOrderDate(ctx, storeURL, accessToken)
+	if err != nil {
+		slog.Warn("failed to fetch oldest Magento order date, defaulting to now", "merchant_id", merchantID, "error", err)
+		oldestOrderDate = time.Now().UTC()
+	}
+
+	encToken, err := crypto.EncryptToken(accessToken)
+	if err != nil {
+		slog.Error("failed to encrypt magento token", "error", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"success": false,
+			"error":   "failed encrypting integration token",
+		})
+	}
+
+	var merchant domain.Merchant
+	if err := h.pg.Where("id = ?", merchantID).First(&merchant).Error; err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+			"success": false,
+			"error":   "merchant not found",
+		})
+	}
+
+	err = h.pg.Transaction(func(tx *gorm.DB) error {
+		merchant.Platform = "magento"
+		merchant.MagentoBaseURL = storeURL
+		merchant.MagentoCreatedAt = &oldestOrderDate
+		if err := tx.Save(&merchant).Error; err != nil {
+			return err
+		}
+
+		var cred domain.PlatformCredential
+		err := tx.Where("merchant_id = ? AND platform = ?", merchantID, "magento").First(&cred).Error
+		if err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				cred = domain.PlatformCredential{
+					MerchantID: merchantID,
+					Platform:   "magento",
+				}
+			} else {
+				return err
+			}
+		}
+
+		cred.ShopDomain = storeURL
+		cred.IntegrationTokenEncrypted = encToken
+		cred.InstalledAt = time.Now()
+		cred.IsActive = true
+		cred.UninstalledAt = nil
+
+		if err := tx.Save(&cred).Error; err != nil {
+			return err
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		slog.Error("failed saving magento credentials in transaction", "error", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"success": false,
+			"error":   "database persistence failed",
+		})
+	}
+
+	if onboardingErr := backfill.TriggerPlatformOnboarding(ctx, &merchant, oldestOrderDate); onboardingErr != nil {
+		slog.Error("failed triggering Magento onboarding", "merchant_id", merchantID, "error", onboardingErr)
+	}
+
+	return c.JSON(fiber.Map{
+		"success":         true,
+		"store_name":      storeName,
+		"magento_version": magentoVersion,
+		"verified":        true,
+	})
 }
