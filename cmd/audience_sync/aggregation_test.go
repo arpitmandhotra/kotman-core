@@ -62,6 +62,7 @@ func TestRunAudienceSync_Integration(t *testing.T) {
         &domain.MerchantSettings{},
         &domain.BillableEvent{},
         &domain.TrustProfile{},
+        &domain.Order{},
     ); err != nil {
         t.Fatalf("failed to migrate database schema: %v", err)
     }

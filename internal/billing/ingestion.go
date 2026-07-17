@@ -15,6 +15,7 @@ import (
 	"github.com/arpitmandhotra/api-integrator/internal/classification"
 	"github.com/arpitmandhotra/api-integrator/internal/crypto"
 	"github.com/arpitmandhotra/api-integrator/internal/crm"
+	"github.com/arpitmandhotra/api-integrator/internal/database"
 	"github.com/arpitmandhotra/api-integrator/internal/domain"
 	"github.com/arpitmandhotra/api-integrator/internal/integrations/meta"
 	"github.com/google/uuid"
@@ -439,6 +440,33 @@ func ProcessInboundOrder(ctx context.Context, platform string, merchantID string
 			outcome = "PENDING"
 		}
 
+		var geoState, geoTier, geoDistrict string
+		var geoLat, geoLng float64
+		geoTier = "TIER3" // default
+
+		if zipCode != "" {
+			var rdbClient *redis.Client
+			if rdb, ok := Redis.(*redis.Client); ok {
+				rdbClient = rdb
+			}
+			pincodeRepo := database.NewPincodeRepository(DB, rdbClient)
+			ref, err := pincodeRepo.GetPincodeInfo(ctx, zipCode)
+			if err != nil {
+				slog.Error("failed to lookup pincode info during order ingestion", "pincode", zipCode, "error", err)
+			}
+			if ref != nil {
+				geoState = ref.StateName
+				geoTier = ref.GeoTier
+				geoDistrict = ref.District
+				geoLat = ref.Latitude
+				geoLng = ref.Longitude
+			} else {
+				slog.Warn("pincode not found in reference table during order ingestion", "pincode", zipCode)
+			}
+		} else {
+			slog.Warn("empty pincode received during order ingestion")
+		}
+
 		orderRecord := domain.Order{
 			ID:                     orderUUID,
 			MerchantID:             merchantUUID,
@@ -455,6 +483,11 @@ func ProcessInboundOrder(ctx context.Context, platform string, merchantID string
 			ShippingAddressPincode: zipCode,
 			City:                   cityName,
 			State:                  provinceName,
+			GeoState:               geoState,
+			GeoTier:                geoTier,
+			GeoDistrict:            geoDistrict,
+			GeoLatitude:            geoLat,
+			GeoLongitude:           geoLng,
 		}
 
 		if err := DB.WithContext(ctx).Save(&orderRecord).Error; err != nil {
@@ -656,14 +689,43 @@ func ProcessInboundOrder(ctx context.Context, platform string, merchantID string
 
 		// SYNC WITH: internal/service/redis_trust.go EvaluateRisk
 		trustScore := 100.0
-		if profile.TotalOrders > 0 {
-			rtoRate := float64(profile.TotalRTOs) / float64(profile.TotalOrders)
-			cancelRate := float64(profile.TotalCancellations) / float64(profile.TotalOrders)
-			trustScore -= rtoRate * 60
-			trustScore -= cancelRate * 20
-			trustScore += profile.RiskAdjustment
+
+		var orders []domain.Order
+		if err := DB.WithContext(capiCtx).Where("buyer_phone_normalized = ?", eventVal.PhoneHash).Find(&orders).Error; err == nil && len(orders) > 0 {
+			var weightedTotalOrders float64
+			var weightedRTOs float64
+			var weightedCancellations float64
+
+			for _, o := range orders {
+				ageMonths := int(math.Floor(time.Since(o.CreatedAt).Hours() / 24 / 30))
+				weight := domain.OrderWeight(ageMonths)
+
+				weightedTotalOrders += weight
+				if o.Outcome == "RTO" || o.FulfillmentStatus == "rto" {
+					weightedRTOs += weight
+				}
+				if o.Outcome == "CANCELLED" || strings.ToLower(o.FulfillmentStatus) == "cancelled" {
+					weightedCancellations += weight
+				}
+			}
+
+			if weightedTotalOrders > 0 {
+				rtoRate := weightedRTOs / weightedTotalOrders
+				cancelRate := weightedCancellations / weightedTotalOrders
+				trustScore = 100.0 - (rtoRate * 60) - (cancelRate * 20) + profile.RiskAdjustment
+			} else {
+				trustScore = 85.0
+			}
 		} else {
-			trustScore = 85
+			if profile.TotalOrders > 0 {
+				rtoRate := float64(profile.TotalRTOs) / float64(profile.TotalOrders)
+				cancelRate := float64(profile.TotalCancellations) / float64(profile.TotalOrders)
+				trustScore -= rtoRate * 60
+				trustScore -= cancelRate * 20
+				trustScore += profile.RiskAdjustment
+			} else {
+				trustScore = 85
+			}
 		}
 		if profile.IsBlacklisted {
 			trustScore = 5

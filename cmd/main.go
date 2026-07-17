@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"log/slog"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"github.com/arpitmandhotra/api-integrator/internal/billing"
 	"github.com/arpitmandhotra/api-integrator/internal/database"
 	"github.com/arpitmandhotra/api-integrator/internal/handlers"
+	"github.com/arpitmandhotra/api-integrator/internal/integrations/backfill"
 	"github.com/arpitmandhotra/api-integrator/internal/logger"
 	"github.com/arpitmandhotra/api-integrator/internal/middleware"
 	"github.com/arpitmandhotra/api-integrator/internal/service"
@@ -63,6 +65,7 @@ func main() {
 	onboardingHandler := handlers.NewOnboardingHandler(postgresClient)
 	billingHandler := handlers.NewBillingHandler(postgresClient, redisClient)
 	scoreHandler := handlers.NewScoreHandler(postgresClient)
+	pincodeHandler := handlers.NewPincodeHandler(postgresClient, redisClient)
 
 	// ==========================================
 	// 3. THE ROUTER & MIDDLEWARE LAYER
@@ -180,6 +183,10 @@ func main() {
 		analyticsHandler.GetBuyerIntelligence,
 	)
 
+	app.Get("/v1/pincode/:pincode",
+		pincodeHandler.GetPincode,
+	)
+
 	// Score API Endpoints
 	app.Get("/v1/merchants/:id/scores",
 		middleware.RequireAPIKey(postgresClient, redisClient),
@@ -272,6 +279,12 @@ func main() {
 			"status": "healthy",
 		})
 	})
+
+	pollerCtx, cancelPoller := context.WithCancel(context.Background())
+	defer cancelPoller()
+
+	// Start Shopify bulk operation poller
+	go backfill.StartPoller(pollerCtx, postgresClient, redisClient)
 
 	// Run server in a goroutine so it doesn't block the signal listener
 	go func() {

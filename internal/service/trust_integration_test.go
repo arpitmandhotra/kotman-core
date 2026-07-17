@@ -98,6 +98,7 @@ func TestEvaluateRisk_Integration(t *testing.T) {
 		&domain.Merchant{},
 		&domain.MerchantSettings{},
 		&domain.TransactionHistory{},
+		&domain.Order{},
 	); err != nil {
 		t.Fatalf("failed to migrate test database: %s", err)
 	}

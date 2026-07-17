@@ -181,6 +181,11 @@ func (h *AnalyticsHandler) GetMerchantInsights(c *fiber.Ctx) error {
 		loyaltyInsights = BuildBuyerLoyaltyInsights(&snapshot, merchant.Tier)
 	}
 
+	statusStr := string(merchant.BackfillStatus)
+	if statusStr == "" {
+		statusStr = "not_started"
+	}
+
 	resp := domain.InsightsResponse{
 		ExecutionMode:            executionMode,
 		ShadowDaysRemaining:      shadowDaysRemaining,
@@ -207,6 +212,12 @@ func (h *AnalyticsHandler) GetMerchantInsights(c *fiber.Ctx) error {
 		CrossNetwork:             crossNetwork,
 		CrossNetworkPaywalled:    crossNetworkPaywalled,
 		RTOEngine:                rtoEngine,
+		Backfill: domain.BackfillStats{
+			Status:      statusStr,
+			OrderCount:  merchant.BackfillOrderCount,
+			HorizonAt:   merchant.BackfillHorizonAt,
+			CompletedAt: merchant.BackfillCompletedAt,
+		},
 	}
 
 	return c.JSON(resp)

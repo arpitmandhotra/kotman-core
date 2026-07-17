@@ -51,6 +51,13 @@ func main() {
 		ALTER TABLE merchants ADD COLUMN IF NOT EXISTS subscription_renews_at TIMESTAMP WITH TIME ZONE;
 		ALTER TABLE merchants DROP CONSTRAINT IF EXISTS chk_merchants_tier;
 		ALTER TABLE merchants ADD CONSTRAINT chk_merchants_tier CHECK (tier IN ('free', 'growth', 'growth_ads'));
+		ALTER TABLE merchants ADD COLUMN IF NOT EXISTS backfill_status VARCHAR(50) NOT NULL DEFAULT 'not_started';
+		ALTER TABLE merchants ADD COLUMN IF NOT EXISTS backfill_started_at TIMESTAMP WITH TIME ZONE;
+		ALTER TABLE merchants ADD COLUMN IF NOT EXISTS backfill_completed_at TIMESTAMP WITH TIME ZONE;
+		ALTER TABLE merchants ADD COLUMN IF NOT EXISTS backfill_order_count INT NOT NULL DEFAULT 0;
+		ALTER TABLE merchants ADD COLUMN IF NOT EXISTS backfill_horizon_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT '1970-01-01 00:00:00+00';
+		ALTER TABLE merchants ADD COLUMN IF NOT EXISTS backfill_error_message TEXT NOT NULL DEFAULT '';
+		ALTER TABLE merchants ADD COLUMN IF NOT EXISTS shopify_created_at TIMESTAMP WITH TIME ZONE;
 	`
 	if err := db.Exec(alterMerchantSQL).Error; err != nil {
 		log.Fatalf("❌ Failed to migrate Merchant tier columns and constraints: %v", err)
@@ -144,6 +151,11 @@ func main() {
 		log.Fatalf("❌ Failed to migrate BuyerProfile: %v", err)
 	}
 
+	log.Println("📦 Syncing domain.ShopifyBulkOperation schema...")
+	if err := db.AutoMigrate(&domain.ShopifyBulkOperation{}); err != nil {
+		log.Fatalf("❌ Failed to migrate ShopifyBulkOperation: %v", err)
+	}
+
 	log.Println("📦 Syncing domain.BuyerLoyaltySnapshot schema...")
 	if err := db.AutoMigrate(&domain.BuyerLoyaltySnapshot{}); err != nil {
 		log.Fatalf("❌ Failed to migrate BuyerLoyaltySnapshot: %v", err)
@@ -168,6 +180,11 @@ func main() {
 		log.Fatalf("❌ Failed to migrate Order: %v", err)
 	}
 
+	log.Println("📦 Syncing domain.PincodeReference schema...")
+	if err := db.AutoMigrate(&domain.PincodeReference{}); err != nil {
+		log.Fatalf("❌ Failed to migrate PincodeReference: %v", err)
+	}
+
 	log.Println("📦 Running raw migration to configure order buyer columns...")
 	alterOrderSQL := `
 		ALTER TABLE orders ADD COLUMN IF NOT EXISTS buyer_phone_normalized VARCHAR(100) NOT NULL DEFAULT '';
@@ -179,6 +196,11 @@ func main() {
 		ALTER TABLE orders ADD COLUMN IF NOT EXISTS shipping_address_pincode VARCHAR(20) NOT NULL DEFAULT '';
 		ALTER TABLE orders ADD COLUMN IF NOT EXISTS city VARCHAR(100) NOT NULL DEFAULT '';
 		ALTER TABLE orders ADD COLUMN IF NOT EXISTS state VARCHAR(100) NOT NULL DEFAULT '';
+		ALTER TABLE orders ADD COLUMN IF NOT EXISTS geo_state VARCHAR(100) NOT NULL DEFAULT '';
+		ALTER TABLE orders ADD COLUMN IF NOT EXISTS geo_tier VARCHAR(50) NOT NULL DEFAULT '';
+		ALTER TABLE orders ADD COLUMN IF NOT EXISTS geo_district VARCHAR(100) NOT NULL DEFAULT '';
+		ALTER TABLE orders ADD COLUMN IF NOT EXISTS geo_latitude DECIMAL(10,7) NOT NULL DEFAULT 0.0;
+		ALTER TABLE orders ADD COLUMN IF NOT EXISTS geo_longitude DECIMAL(10,7) NOT NULL DEFAULT 0.0;
 	`
 	if err := db.Exec(alterOrderSQL).Error; err != nil {
 		log.Fatalf("❌ Failed to migrate Order buyer columns: %v", err)

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"net/url"
 	"os"
 	"regexp"
@@ -134,6 +135,14 @@ func (h *OAuthHandler) HandleShopifyCallback(c *fiber.Ctx) error {
 		})
 	}
 
+	// Fetch shop creation date
+	var shopifyCreatedAt *time.Time
+	if shopCreatedAt, err := fetchShopifyCreatedAt(ctx, shop, tokenResp.AccessToken); err == nil {
+		shopifyCreatedAt = shopCreatedAt
+	} else {
+		slog.Warn("failed to fetch shopify shop creation date during callback", "shop", shop, "error", err)
+	}
+
 	// FOURTH: Generate new API key
 	apiKey, err := GenerateAPIKey()
 	if err != nil {
@@ -154,17 +163,19 @@ func (h *OAuthHandler) HandleShopifyCallback(c *fiber.Ctx) error {
 				return err
 			}
 			merchant.APIKeyHash = crypto.HashAPIKey(apiKey)
+			merchant.ShopifyCreatedAt = shopifyCreatedAt
 			if err := tx.Save(&merchant).Error; err != nil {
 				return err
 			}
 		} else if errors.Is(err, gorm.ErrRecordNotFound) {
 			// Create new Merchant
 			merchant = domain.Merchant{
-				ID:         uuid.New().String(),
-				StoreName:  shop,
-				APIKeyHash: crypto.HashAPIKey(apiKey),
-				Platform:   "shopify",
-				IsActive:   true,
+				ID:               uuid.New().String(),
+				StoreName:        shop,
+				APIKeyHash:       crypto.HashAPIKey(apiKey),
+				Platform:         "shopify",
+				IsActive:         true,
+				ShopifyCreatedAt: shopifyCreatedAt,
 			}
 			if err := tx.Create(&merchant).Error; err != nil {
 				return err
@@ -223,12 +234,12 @@ func (h *OAuthHandler) HandleShopifyCallback(c *fiber.Ctx) error {
 		})
 	}
 
-	// SIXTH: Kick off async history backfill
+	// SIXTH: Kick off Shopify bulk operation backfill
 	go func() {
-		backfillCtx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+		backfillCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
-		if backfillErr := backfill.BackfillOrderHistory(backfillCtx, merchant.ID, "shopify"); backfillErr != nil {
-			slog.Error("shopify historical order backfill failed", "merchant_id", merchant.ID, "error", backfillErr)
+		if backfillErr := backfill.RunShopifyBackfill(backfillCtx, merchant.ID); backfillErr != nil {
+			slog.Error("shopify bulk operation backfill initiation failed", "merchant_id", merchant.ID, "error", backfillErr)
 		}
 	}()
 
@@ -457,4 +468,39 @@ func (h *OAuthHandler) HandleWooCommerceReturn(c *fiber.Ctx) error {
 		welcomeURL = "http://localhost:3000/welcome"
 	}
 	return c.Redirect(fmt.Sprintf("%s#api_key=%s", welcomeURL, apiKey))
+}
+
+func fetchShopifyCreatedAt(ctx context.Context, shop, token string) (*time.Time, error) {
+	reqURL := fmt.Sprintf("https://%s/admin/api/2026-01/shop.json", shop)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("X-Shopify-Access-Token", token)
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("shop api returned status %s", resp.Status)
+	}
+
+	var payload struct {
+		Shop struct {
+			CreatedAt string `json:"created_at"`
+		} `json:"shop"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, err
+	}
+
+	t, err := time.Parse(time.RFC3339, payload.Shop.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &t, nil
 }
