@@ -159,14 +159,9 @@ func (h *MagentoOnboardHandler) HandleMagentoOnboard(c *fiber.Ctx) error {
 		})
 	}
 
-	// Kick off historical backfill async
-	go func() {
-		backfillCtx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
-		defer cancel()
-		if backfillErr := backfill.BackfillOrderHistory(backfillCtx, merchantID, "magento"); backfillErr != nil {
-			slog.Error("magento historical order backfill failed", "merchant_id", merchantID, "error", backfillErr)
-		}
-	}()
+	if enqErr := backfill.MagentoBackfillQueue.Enqueue(context.Background(), merchantID); enqErr != nil {
+		slog.Error("failed to enqueue magento backfill", "merchant_id", merchantID, "error", enqErr)
+	}
 
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
 		"message":     "Magento store onboarded successfully",

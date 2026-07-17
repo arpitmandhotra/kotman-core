@@ -609,7 +609,19 @@ type BulkLine struct {
 }
 
 func downloadAndProcessBulkOp(ctx context.Context, db *gorm.DB, rdb *redis.Client, op *domain.ShopifyBulkOperation) error {
-	resp, err := http.Get(op.DownloadURL)
+	// Validate the URL is from Shopify's CDN before fetching
+	parsedURL, parseErr := url.Parse(op.DownloadURL)
+	if parseErr != nil || parsedURL.Scheme != "https" ||
+		(!strings.HasSuffix(parsedURL.Host, ".shopifycloud.com") &&
+			!strings.HasSuffix(parsedURL.Host, ".shopify.com")) {
+		return fmt.Errorf("bulk op download URL failed validation: %s", op.DownloadURL)
+	}
+
+	downloadReq, err := http.NewRequestWithContext(ctx, http.MethodGet, op.DownloadURL, nil)
+	if err != nil {
+		return fmt.Errorf("failed to build download request: %w", err)
+	}
+	resp, err := backfillHttpClient.Do(downloadReq)
 	if err != nil {
 		return err
 	}
@@ -620,6 +632,10 @@ func downloadAndProcessBulkOp(ctx context.Context, db *gorm.DB, rdb *redis.Clien
 	}
 
 	scanner := bufio.NewScanner(resp.Body)
+	const maxLineSize = 1 * 1024 * 1024 // 1MB per line
+	buf := make([]byte, maxLineSize)
+	scanner.Buffer(buf, maxLineSize)
+
 	totalProcessed := 0
 	pincodeRepo := database.NewPincodeRepository(db, rdb)
 
@@ -767,6 +783,10 @@ func downloadAndProcessBulkOp(ctx context.Context, db *gorm.DB, rdb *redis.Clien
 		}
 	}
 
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("scanner error during JSONL processing: %w", err)
+	}
+
 	now := time.Now().UTC()
 	db.Model(&domain.Merchant{}).Where("id = ?", op.MerchantID.String()).Updates(map[string]interface{}{
 		"backfill_status":      domain.BackfillComplete,
@@ -774,7 +794,7 @@ func downloadAndProcessBulkOp(ctx context.Context, db *gorm.DB, rdb *redis.Clien
 		"backfill_order_count":  totalProcessed,
 	})
 
-	return scanner.Err()
+	return nil
 }
 
 type WooOrder struct {

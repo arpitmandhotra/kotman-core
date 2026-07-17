@@ -25,6 +25,18 @@ func (h *ScoreHandler) GetMerchantScores(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "missing merchant id"})
 	}
 
+	authenticatedID, ok := c.Locals("kaughtman.merchant_id").(string)
+	if !ok || authenticatedID == "" {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+			"error": "unauthorized",
+		})
+	}
+	if authenticatedID != merchantID {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+			"error": "access denied — you may only view your own scores",
+		})
+	}
+
 	ctx := c.UserContext()
 	var merchant domain.Merchant
 	if err := h.pg.WithContext(ctx).Where("id = ?", merchantID).First(&merchant).Error; err != nil {
@@ -97,6 +109,18 @@ func (h *ScoreHandler) GetMerchantScoreByType(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "missing parameters"})
 	}
 
+	authenticatedID, ok := c.Locals("kaughtman.merchant_id").(string)
+	if !ok || authenticatedID == "" {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+			"error": "unauthorized",
+		})
+	}
+	if authenticatedID != merchantID {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+			"error": "access denied — you may only view your own scores",
+		})
+	}
+
 	ctx := c.UserContext()
 	var merchant domain.Merchant
 	if err := h.pg.WithContext(ctx).Where("id = ?", merchantID).First(&merchant).Error; err != nil {
@@ -135,6 +159,18 @@ func (h *ScoreHandler) GetMerchantScoreHistory(c *fiber.Ctx) error {
 
 	if merchantID == "" || scoreTypeParam == "" {
 		return c.Status(400).JSON(fiber.Map{"error": "missing parameters"})
+	}
+
+	authenticatedID, ok := c.Locals("kaughtman.merchant_id").(string)
+	if !ok || authenticatedID == "" {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+			"error": "unauthorized",
+		})
+	}
+	if authenticatedID != merchantID {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+			"error": "access denied — you may only view your own scores",
+		})
 	}
 
 	ctx := c.UserContext()

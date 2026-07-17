@@ -59,3 +59,23 @@ func TestGatedScoreEnvelope_Validation(t *testing.T) {
 		t.Errorf("expected tier 'growth', got '%s'", env.TierRequired)
 	}
 }
+
+func TestScoreHandler_IDOR_Gating(t *testing.T) {
+	app := fiber.New()
+	h := handlers.NewScoreHandler(nil) // nil DB is fine because IDOR check happens before DB calls
+
+	app.Get("/v1/merchants/:id/scores", func(c *fiber.Ctx) error {
+		c.Locals("kaughtman.merchant_id", "merchant-A")
+		return h.GetMerchantScores(c)
+	})
+
+	req := httptest.NewRequest("GET", "/v1/merchants/merchant-B/scores", nil)
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatalf("failed test request: %v", err)
+	}
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("expected status 403 Forbidden, got %d", resp.StatusCode)
+	}
+}

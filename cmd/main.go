@@ -188,6 +188,7 @@ func main() {
 	)
 
 	app.Get("/v1/pincode/:pincode",
+		ipLimiter,
 		pincodeHandler.GetPincode,
 	)
 
@@ -273,10 +274,14 @@ func main() {
 		}
 
 		if redisErr != nil || postgresErr != nil {
+			if redisErr != nil {
+				slog.Error("health check: redis unreachable", "error", redisErr)
+			}
+			if postgresErr != nil {
+				slog.Error("health check: postgres unreachable", "error", postgresErr)
+			}
 			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
-				"status":   "unhealthy",
-				"redis":    redisErr == nil,
-				"postgres": postgresErr == nil,
+				"status": "unhealthy",
 			})
 		}
 		return c.Status(fiber.StatusOK).JSON(fiber.Map{
