@@ -673,7 +673,7 @@ func ProcessInboundOrder(ctx context.Context, platform string, merchantID string
 
 		if !settings.MetaCAPIEnabled ||
 			settings.MetaPixelID == "" ||
-			settings.MetaAccessToken == "" {
+			settings.MetaAccessTokenEncrypted == "" {
 			return
 		}
 
@@ -750,11 +750,17 @@ func ProcessInboundOrder(ctx context.Context, platform string, merchantID string
 			eventTimestamp = time.Now().Unix()
 		}
 
+		decryptedToken, err := crypto.DecryptToken(settings.MetaAccessTokenEncrypted)
+		if err != nil {
+			slog.Error("ingestion: failed to decrypt meta access token", "merchant_id", eventVal.MerchantID, "error", err)
+			return
+		}
+
 		capiClient := meta.NewCAPIClient()
 		_ = capiClient.SendPurchaseEvent(capiCtx, meta.CAPIEventInput{
 			MerchantID:      eventVal.MerchantID,
 			PixelID:         settings.MetaPixelID,
-			AccessToken:     settings.MetaAccessToken,
+			AccessToken:     decryptedToken,
 			TestEventCode:   settings.MetaTestEventCode,
 			OrderID:         eventVal.OrderID,
 			RawPhone:        rawPhoneVal,

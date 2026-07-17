@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"log/slog"
 	"strings"
 	"time"
@@ -178,6 +179,8 @@ func (h *BillingHandler) ActivateSubscription(c *fiber.Ctx) error {
 		return c.Status(500).JSON(fiber.Map{"success": false, "error": "failed to activate subscription"})
 	}
 
+	InvalidateMerchantCache(c.UserContext(), h.rdb, merchant.APIKeyHash)
+
 	slog.Info("subscription activated successfully", "merchant_id", merchantID, "plan", plan)
 	return c.JSON(fiber.Map{
 		"success":   true,
@@ -231,6 +234,8 @@ func (h *BillingHandler) UpgradeSubscription(c *fiber.Ctx) error {
 		return c.Status(500).JSON(fiber.Map{"success": false, "error": "failed to upgrade subscription"})
 	}
 
+	InvalidateMerchantCache(c.UserContext(), h.rdb, merchant.APIKeyHash)
+
 	slog.Info("merchant upgraded subscription mid-cycle", "merchant_id", merchantID, "from", "growth", "to", "growth_ads", "timestamp", time.Now())
 	return c.JSON(fiber.Map{
 		"success": true,
@@ -268,6 +273,7 @@ func (h *BillingHandler) CancelSubscription(c *fiber.Ctx) error {
 		}
 
 		updates := map[string]interface{}{
+			"tier":                   domain.TierFree,
 			"subscription_renews_at": &renewsAt,
 			"has_paid_subscription":  false, // will downgrade to free on next invoice cycle
 		}
@@ -279,9 +285,20 @@ func (h *BillingHandler) CancelSubscription(c *fiber.Ctx) error {
 		return c.Status(500).JSON(fiber.Map{"success": false, "error": "failed to cancel subscription"})
 	}
 
+	InvalidateMerchantCache(c.UserContext(), h.rdb, merchant.APIKeyHash)
+
 	slog.Info("merchant cancelled subscription", "merchant_id", merchantID, "effective_at", renewsAt)
 	return c.JSON(fiber.Map{
 		"success": true,
 		"message": "Subscription cancelled successfully. Your features will remain active until " + renewsAt.Format("2006-01-02") + ".",
 	})
+}
+
+// InvalidateMerchantCache invalidates the merchant's cached auth credentials in Redis
+func InvalidateMerchantCache(ctx context.Context, rdb *redis.Client, apiKeyHash string) {
+	if apiKeyHash == "" {
+		return
+	}
+	cacheKey := "auth:apikey:" + apiKeyHash
+	rdb.Del(ctx, cacheKey)
 }

@@ -4,6 +4,7 @@ import (
 	"log"
 
 	"github.com/arpitmandhotra/api-integrator/internal/classification"
+	"github.com/arpitmandhotra/api-integrator/internal/crypto"
 	"github.com/arpitmandhotra/api-integrator/internal/database"
 	"github.com/arpitmandhotra/api-integrator/internal/domain"
 	"github.com/joho/godotenv"
@@ -58,9 +59,21 @@ func main() {
 		ALTER TABLE merchants ADD COLUMN IF NOT EXISTS backfill_horizon_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT '1970-01-01 00:00:00+00';
 		ALTER TABLE merchants ADD COLUMN IF NOT EXISTS backfill_error_message TEXT NOT NULL DEFAULT '';
 		ALTER TABLE merchants ADD COLUMN IF NOT EXISTS shopify_created_at TIMESTAMP WITH TIME ZONE;
+		ALTER TABLE merchants ADD COLUMN IF NOT EXISTS woo_created_at TIMESTAMP WITH TIME ZONE;
+		ALTER TABLE merchants ADD COLUMN IF NOT EXISTS magento_created_at TIMESTAMP WITH TIME ZONE;
+		ALTER TABLE merchants ADD COLUMN IF NOT EXISTS magento_base_url VARCHAR(255) NOT NULL DEFAULT '';
+		ALTER TABLE merchants ADD COLUMN IF NOT EXISTS email VARCHAR(255) NOT NULL DEFAULT '';
+		ALTER TABLE merchants ADD COLUMN IF NOT EXISTS password_hash VARCHAR(255) NOT NULL DEFAULT '';
+		ALTER TABLE merchants ADD COLUMN IF NOT EXISTS email_verified BOOLEAN NOT NULL DEFAULT false;
+		ALTER TABLE merchants ALTER COLUMN api_key_hash DROP NOT NULL;
 	`
 	if err := db.Exec(alterMerchantSQL).Error; err != nil {
-		log.Fatalf("❌ Failed to migrate Merchant tier columns and constraints: %v", err)
+		log.Fatalf("❌ Failed to migrate Merchant columns and constraints: %v", err)
+	}
+
+	// Update existing rows (registered before verification) to avoid locking them out
+	if err := db.Exec("UPDATE merchants SET email_verified = true WHERE email = ''").Error; err != nil {
+		log.Fatalf("❌ Failed to update email_verified for existing merchants: %v", err)
 	}
 
 	log.Println("📦 Syncing domain.MerchantSettings schema...")
@@ -71,9 +84,32 @@ func main() {
 	log.Println("📦 Running raw migration to configure merchant settings columns...")
 	alterMerchantSettingsSQL := `
 		ALTER TABLE merchant_settings ADD COLUMN IF NOT EXISTS capi_dataset_id VARCHAR(100) NOT NULL DEFAULT '';
+		ALTER TABLE merchant_settings ADD COLUMN IF NOT EXISTS meta_access_token_encrypted TEXT NOT NULL DEFAULT '';
 	`
 	if err := db.Exec(alterMerchantSettingsSQL).Error; err != nil {
 		log.Fatalf("❌ Failed to migrate MerchantSettings columns: %v", err)
+	}
+
+	// One-time migration for existing MetaAccessToken plaintext values
+	if db.Migrator().HasColumn(&domain.MerchantSettings{}, "meta_access_token") {
+		type PlainSettings struct {
+			MerchantID      string
+			MetaAccessToken string
+		}
+		var results []PlainSettings
+		if err := db.Raw("SELECT merchant_id, meta_access_token FROM merchant_settings WHERE meta_access_token != ''").Scan(&results).Error; err == nil {
+			for _, r := range results {
+				if enc, encErr := crypto.EncryptToken(r.MetaAccessToken); encErr == nil {
+					_ = db.Exec("UPDATE merchant_settings SET meta_access_token_encrypted = ? WHERE merchant_id = ?", enc, r.MerchantID)
+				}
+			}
+		}
+		_ = db.Migrator().DropColumn(&domain.MerchantSettings{}, "meta_access_token")
+	}
+
+	// Drop shadow_mode_ends_at column from merchants if it exists
+	if db.Migrator().HasColumn(&domain.Merchant{}, "shadow_mode_ends_at") {
+		_ = db.Migrator().DropColumn(&domain.Merchant{}, "shadow_mode_ends_at")
 	}
 
 	log.Println("📦 Syncing domain.TrustProfile schema...")
@@ -161,13 +197,18 @@ func main() {
 		log.Fatalf("❌ Failed to migrate BuyerLoyaltySnapshot: %v", err)
 	}
 
-	log.Println("📦 Running raw migration to configure BuyerLoyaltySnapshot unique index...")
+	log.Println("📦 Running raw migration to configure indexes...")
 	uniqueIndexSQL := `
 		CREATE UNIQUE INDEX IF NOT EXISTS idx_buyer_loyalty_snapshots_merchant_date 
 		ON buyer_loyalty_snapshots (merchant_id, (period_end_at::date));
+		CREATE INDEX IF NOT EXISTS idx_loyalty_merchant_period 
+		ON buyer_loyalty_snapshots (merchant_id, period_end_at DESC);
+		CREATE INDEX IF NOT EXISTS idx_billable_event_invoice_lookup 
+		ON billable_events (merchant_id, created_at, invoice_id) 
+		WHERE invoice_id = '' OR invoice_id IS NULL;
 	`
 	if err := db.Exec(uniqueIndexSQL).Error; err != nil {
-		log.Fatalf("❌ Failed to migrate BuyerLoyaltySnapshot unique index: %v", err)
+		log.Fatalf("❌ Failed to migrate indexes: %v", err)
 	}
 
 	log.Println("📦 Syncing domain.CatalogProduct schema...")

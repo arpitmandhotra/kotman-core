@@ -8,6 +8,7 @@ import (
     "os"
     "time"
 
+    "github.com/arpitmandhotra/api-integrator/internal/crypto"
     "github.com/arpitmandhotra/api-integrator/internal/database"
     "github.com/arpitmandhotra/api-integrator/internal/domain"
     "github.com/arpitmandhotra/api-integrator/internal/integrations/meta"
@@ -55,7 +56,7 @@ func RunAudienceSync(pg *gorm.DB) error {
     // 2. Fetch all active merchants with Meta CAPI enabled and ad account credentials on growth_ads tier
     var settingsList []domain.MerchantSettings
     err = pg.Joins("JOIN merchants ON merchants.id::text = merchant_settings.merchant_id").
-        Where("merchants.tier = ? AND merchant_settings.meta_capi_enabled = ? AND merchant_settings.meta_ad_account_id != '' AND merchant_settings.meta_access_token != ''", domain.TierGrowthAds, true).
+        Where("merchants.tier = ? AND merchant_settings.meta_capi_enabled = ? AND merchant_settings.meta_ad_account_id != '' AND merchant_settings.meta_access_token_encrypted != ''", domain.TierGrowthAds, true).
         Find(&settingsList).Error
     if err != nil {
         return fmt.Errorf("failed to fetch Meta settings: %w", err)
@@ -146,8 +147,13 @@ func RunAudienceSync(pg *gorm.DB) error {
         }
 
         // c. Call UploadVerifiedBuyers
+        decryptedToken, err := crypto.DecryptToken(settings.MetaAccessTokenEncrypted)
+        if err != nil {
+            slog.Error("audience_sync: failed to decrypt meta access token", "merchant_id", settings.MerchantID, "error", err)
+            continue
+        }
         audienceName := "Kaughtman Verified Buyers - " + merchant.StoreName
-        res, err := client.UploadVerifiedBuyers(ctx, settings.MetaAdAccountID, settings.MetaAccessToken, audienceName, results)
+        res, err := client.UploadVerifiedBuyers(ctx, settings.MetaAdAccountID, decryptedToken, audienceName, results)
         if err != nil {
             slog.Error("audience_sync: upload to Meta failed for merchant",
                 "merchant_id", settings.MerchantID,

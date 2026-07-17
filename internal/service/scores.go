@@ -53,24 +53,26 @@ func (s *ScoreService) ComputeAllMerchantScores(ctx context.Context) error {
 	}
 
 	for _, m := range merchants {
+		merchantCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 		slog.Info("computing scores for merchant", "merchant_id", m.ID, "store", m.StoreName)
 
 		// 1. Operations Score (daily cadence, visible in free tier)
-		if err := s.ComputeOperationsScore(ctx, m); err != nil {
+		if err := s.ComputeOperationsScore(merchantCtx, m); err != nil {
 			slog.Error("failed computing Operations Score", "merchant_id", m.ID, "error", err)
 		}
 
 		// 2. RTO Efficiency Score (weekly cadence, visible in free tier)
-		if err := s.ComputeRTOEfficiencyScore(ctx, m); err != nil {
+		if err := s.ComputeRTOEfficiencyScore(merchantCtx, m); err != nil {
 			slog.Error("failed computing RTO Efficiency Score", "merchant_id", m.ID, "error", err)
 		}
 
 		// 3. Buyer Quality Score (weekly cadence, growth tier only)
 		if m.HasPaidSubscription {
-			if err := s.ComputeBuyerQualityScore(ctx, m); err != nil {
+			if err := s.ComputeBuyerQualityScore(merchantCtx, m); err != nil {
 				slog.Error("failed computing Buyer Quality Score", "merchant_id", m.ID, "error", err)
 			}
 		}
+		cancel()
 	}
 
 	slog.Info("completed score computation jobs successfully")

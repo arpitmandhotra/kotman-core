@@ -7,15 +7,16 @@ type Merchant struct {
 	// Your existing, highly-secure UUID setup
 	ID        string `gorm:"primaryKey;type:uuid;default:gen_random_uuid()"`
 	StoreName string `gorm:"not null"`
-	APIKeyHash string `gorm:"uniqueIndex;not null"`
+	APIKeyHash string `gorm:"uniqueIndex;default:null"`
+
+	Email         string `gorm:"uniqueIndex;not null;default:''"`
+	PasswordHash  string `gorm:"not null;default:''"`
+	EmailVerified bool   `gorm:"not null;default:false"`
 
 	Platform  string `gorm:"not null;default:'shopify'"`
 	MagentoBaseURL string `gorm:"default:''"`
 	// --- V2 ONBOARDING UPGRADES ---
 	IsActive  bool      `gorm:"default:true"` // Allows us to disable bad merchants
-	
-	// --- SHADOW MODE FEATURE ---
-	ShadowModeEndsAt time.Time `gorm:"index"`
 
 	// Standard tracking timestamps
 	CreatedAt time.Time
@@ -100,15 +101,31 @@ func (m *Merchant) InActiveMode() bool {
 	return m.HasRTOEngine
 }
 
-// IsFoundingPeriodActive returns true if the founding period features are globally unlocked.
+// Set PLATFORM_LAUNCH_DATE to the actual go-live date before deploying to production.
+// This is the single source of truth for the 45-day founding period.
+var PLATFORM_LAUNCH_DATE = time.Date(2025, time.July, 20, 0, 0, 0, 0, time.UTC) // TODO: update before go-live
+
+const FOUNDING_PERIOD_DAYS = 45
+
 func IsFoundingPeriodActive() bool {
-	return false
+    return time.Now().UTC().Before(PLATFORM_LAUNCH_DATE.AddDate(0, 0, FOUNDING_PERIOD_DAYS))
+}
+
+func FoundingPeriodEndsAt() time.Time {
+    return PLATFORM_LAUNCH_DATE.AddDate(0, 0, FOUNDING_PERIOD_DAYS)
+}
+
+func FoundingPeriodDaysRemaining() int {
+    remaining := time.Until(FoundingPeriodEndsAt())
+    if remaining <= 0 {
+        return 0
+    }
+    return int(remaining.Hours()/24) + 1
 }
 
 type ExecutionMode string
 
 const (
-	ExecutionModeShadow ExecutionMode = "SHADOW"
 	ExecutionModeActive ExecutionMode = "ACTIVE"
 )
 
@@ -153,7 +170,7 @@ type MerchantSettings struct {
     // it is not an OAuth token and AES encryption would add complexity without meaningful
     // benefit, since a database breach would already expose the public MetaPixelID.
     MetaPixelID        string `gorm:"default:''"`  // e.g. "1234567890123456"
-    MetaAccessToken    string `gorm:"default:''"`  // System User access token
+    MetaAccessTokenEncrypted string `gorm:"type:text;default:''"`  // Encrypted System User access token
     MetaAdAccountID   string `gorm:"default:''"`  // e.g. "act_1234567890"
     MetaTestEventCode string `gorm:"default:''"`  // only set in staging/dev
     MetaCAPIEnabled   bool   `gorm:"column:meta_capi_enabled;default:false"` // master on/off switch
@@ -204,24 +221,29 @@ type BackfilledOrder struct {
 // InsightsResponse is the full analytics payload returned by GET /v1/merchants/insights.
 // Sections are gated by subscription module. Fields that require a paid module
 // are populated with zero/nil values and accompanied by a paywall flag when not purchased.
+type FoundingPeriodInfo struct {
+    Active              bool      `json:"active"`
+    EndsAt              time.Time `json:"ends_at"`
+    DaysRemaining       int       `json:"days_remaining"`
+    AllFeaturesUnlocked bool      `json:"all_features_unlocked"`
+}
+
 type InsightsResponse struct {
 
     // =========================================================
     // META — always returned, all tiers
     // =========================================================
-    ExecutionMode             string    `json:"execution_mode"`              // "SHADOW" | "ACTIVE"
-    ShadowDaysRemaining       int       `json:"shadow_days_remaining"`        // 0 if active
-    ShadowEndsAt              time.Time `json:"shadow_ends_at"`
-    TotalOrdersAnalyzed       int       `json:"total_orders_analyzed"`        // all OrderAudit rows for merchant
-    DataCollectionStartedAt   time.Time `json:"data_collection_started_at"`  // merchant.CreatedAt
-    MinCohortMet              bool      `json:"min_cohort_met"`               // true if total_orders_analyzed >= 50
+    ExecutionMode             string             `json:"execution_mode"`              // "SHADOW" | "ACTIVE"
+    TotalOrdersAnalyzed       int                `json:"total_orders_analyzed"`        // all OrderAudit rows for merchant
+    DataCollectionStartedAt   time.Time          `json:"data_collection_started_at"`  // merchant.CreatedAt
+    MinCohortMet              bool               `json:"min_cohort_met"`               // true if total_orders_analyzed >= 50
+    FoundingPeriod            FoundingPeriodInfo `json:"founding_period"`
 
     // =========================================================
     // UPGRADE PROMPTS — shown from day 25 onward
     // =========================================================
     ShowUpgradePrompt         bool      `json:"show_upgrade_prompt"`
     UpgradeUrgencyLevel       int       `json:"upgrade_urgency_level"`   // 1=gentle, 2=moderate, 3=urgent
-    ShadowDaysPastExpiry      int       `json:"shadow_days_past_expiry"` // 0 if still in shadow or active
     SimulatedRTOSavingsINR    float64   `json:"simulated_rto_savings_inr"` // projected savings if RTO engine active
     SimulatedSavingsRangeMin  float64   `json:"simulated_savings_range_min"` // conservative
     SimulatedSavingsRangeMax  float64   `json:"simulated_savings_range_max"` // optimistic

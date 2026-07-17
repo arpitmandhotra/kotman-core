@@ -4,6 +4,8 @@ This repository runs the core merchant integrations, signals processing, and buy
 
 ## Initial Setup
 
+Copy `.env.example` to `.env` and fill in real values before running.
+
 Before the application starts serving pincode-dependent features, you must run the one-time pincode database seed job to download and populate the India post office geographic database.
 
 Run this command once:

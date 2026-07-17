@@ -62,7 +62,7 @@ func main() {
 	oauthHandler := handlers.NewOAuthHandler(postgresClient, redisClient)
 	magentoHandler := handlers.NewMagentoOnboardHandler(postgresClient)
 	analyticsHandler := handlers.NewAnalyticsHandler(postgresClient, redisClient)
-	onboardingHandler := handlers.NewOnboardingHandler(postgresClient)
+	onboardingHandler := handlers.NewOnboardingHandler(postgresClient, redisClient)
 	billingHandler := handlers.NewBillingHandler(postgresClient, redisClient)
 	scoreHandler := handlers.NewScoreHandler(postgresClient)
 	pincodeHandler := handlers.NewPincodeHandler(postgresClient, redisClient)
@@ -73,6 +73,8 @@ func main() {
 	app := fiber.New(fiber.Config{
 		BodyLimit: 1 * 1024 * 1024, // 1MB — Shopify webhooks are never legitimately larger
 	})
+
+
 	
 	app.Use(recover.New())
 	
@@ -124,7 +126,10 @@ func main() {
 	// 4. THE ROUTES
 	// ==========================================
 
-	app.Post("/v1/merchants/register", ipLimiter, onboardingHandler.RegisterMerchant)
+	app.Post("/v1/auth/register", ipLimiter, onboardingHandler.RegisterMerchant)
+	app.Post("/v1/auth/login", ipLimiter, onboardingHandler.Login)
+	app.Post("/v1/auth/verify-email", ipLimiter, onboardingHandler.VerifyEmail)
+	app.Post("/v1/auth/resend-verification", ipLimiter, onboardingHandler.ResendVerification)
 	app.Patch("/v1/merchants/settings",
 		middleware.RequireAPIKey(postgresClient, redisClient),
 		onboardingHandler.UpdateSettings,

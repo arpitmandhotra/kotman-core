@@ -47,4 +47,13 @@ func main() {
 		os.Exit(1)
 	}
 	slog.Info("billable event PII redacted", "rows_redacted", result2.RowsAffected)
+
+	result3 := pg.Model(&domain.OrderAudit{}).
+		Where("created_at < ? AND raw_payload != '{}'", cutoff).
+		Update("raw_payload", "{}")
+	if result3.Error != nil {
+		slog.Error("order audit payload purge failed", "error", result3.Error)
+		os.Exit(1)
+	}
+	slog.Info("order audit payloads purged", "rows_purged", result3.RowsAffected)
 }
