@@ -3,6 +3,7 @@ package handlers
 import (
 	"errors"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type OnboardingHandler struct {
@@ -475,5 +477,129 @@ func (h *OnboardingHandler) UpdateSettings(c *fiber.Ctx) error {
 		"success": true,
 		"message": "Settings updated successfully",
 		"settings": settings,
+	})
+}
+
+// JoinWaitlist handles POST /v1/waitlist/join
+func (h *OnboardingHandler) JoinWaitlist(c *fiber.Ctx) error {
+	var req struct {
+		Email        string `json:"email"`
+		StoreName    string `json:"store_name"`
+		TierInterest string `json:"tier_interest"`
+	}
+
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"success": false,
+			"error":   "invalid JSON payload",
+		})
+	}
+
+	email := strings.ToLower(strings.TrimSpace(req.Email))
+	if email == "" || !strings.Contains(email, "@") {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"success": false,
+			"error":   "valid email is required",
+		})
+	}
+
+	tierInterest := strings.ToLower(strings.TrimSpace(req.TierInterest))
+	if tierInterest == "" {
+		tierInterest = "growth"
+	}
+	if tierInterest != "growth" && tierInterest != "growth_ads" && tierInterest != "both" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"success": false,
+			"error":   "invalid tier_interest. Must be 'growth', 'growth_ads', or 'both'",
+		})
+	}
+
+	// Optional authentication: check if merchant is logged in via X-API-Key
+	merchantID := ""
+	apiKey := c.Get("X-API-Key")
+	if apiKey != "" {
+		hashedKey := crypto.HashAPIKey(apiKey)
+		var m domain.Merchant
+		if err := h.pg.WithContext(c.UserContext()).Where("api_key_hash = ? AND is_active = ?", hashedKey, true).First(&m).Error; err == nil {
+			merchantID = m.ID
+		}
+	}
+
+	source := "dashboard"
+	if merchantID == "" {
+		source = "pricing_page"
+	}
+
+	entry := domain.WaitlistEntry{
+		ID:           uuid.New().String(),
+		Email:        email,
+		StoreName:    req.StoreName,
+		MerchantID:   merchantID,
+		TierInterest: tierInterest,
+		Source:       source,
+	}
+
+	err := h.pg.WithContext(c.UserContext()).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "email"}},
+		DoUpdates: clause.AssignmentColumns([]string{"tier_interest", "store_name", "merchant_id", "source", "updated_at"}),
+	}).Create(&entry).Error
+
+	if err != nil {
+		slog.Error("failed to save waitlist entry", "email", email, "error", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"success": false,
+			"error":   "failed to save waitlist entry",
+		})
+	}
+
+	return c.JSON(fiber.Map{
+		"success": true,
+		"message": "You're on the list. We'll reach out when Growth launches.",
+	})
+}
+
+// GetWaitlist handles GET /v1/admin/waitlist
+func (h *OnboardingHandler) GetWaitlist(c *fiber.Ctx) error {
+	var entries []domain.WaitlistEntry
+	var total int64
+
+	query := h.pg.Model(&domain.WaitlistEntry{})
+	if tier := c.Query("tier"); tier != "" {
+		query = query.Where("tier_interest = ?", tier)
+	}
+
+	if err := query.Count(&total).Error; err != nil {
+		slog.Error("failed to count waitlist entries", "error", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"success": false,
+			"error":   "failed to query waitlist",
+		})
+	}
+
+	limit := 100
+	if l := c.Query("limit"); l != "" {
+		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 {
+			limit = parsed
+		}
+	}
+
+	offset := 0
+	if o := c.Query("offset"); o != "" {
+		if parsed, err := strconv.Atoi(o); err == nil && parsed >= 0 {
+			offset = parsed
+		}
+	}
+
+	if err := query.Limit(limit).Offset(offset).Order("created_at DESC").Find(&entries).Error; err != nil {
+		slog.Error("failed to fetch waitlist entries", "error", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"success": false,
+			"error":   "failed to fetch waitlist",
+		})
+	}
+
+	return c.JSON(fiber.Map{
+		"entries": entries,
+		"total":   total,
 	})
 }

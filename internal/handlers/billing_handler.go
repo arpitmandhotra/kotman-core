@@ -131,6 +131,13 @@ func (h *BillingHandler) VerifyModulePurchase(c *fiber.Ctx) error {
 // Route: POST /v1/billing/subscription/activate
 // Body: { "plan": "growth" | "growth_ads" }
 func (h *BillingHandler) ActivateSubscription(c *fiber.Ctx) error {
+	return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
+		"success":      false,
+		"code":         "TIER_NOT_YET_AVAILABLE",
+		"message":      "Growth and Growth+Ads tiers are coming soon. Join the waitlist at /v1/waitlist/join to get early access.",
+		"waitlist_url": "/v1/waitlist/join",
+	})
+
 	merchantIDVal := c.Locals("kaughtman.merchant_id")
 	merchantID, ok := merchantIDVal.(string)
 	if !ok || merchantID == "" {
@@ -194,6 +201,13 @@ func (h *BillingHandler) ActivateSubscription(c *fiber.Ctx) error {
 // Route: POST /v1/billing/subscription/upgrade
 // Body: { "plan": "growth_ads" }
 func (h *BillingHandler) UpgradeSubscription(c *fiber.Ctx) error {
+	return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
+		"success":      false,
+		"code":         "TIER_NOT_YET_AVAILABLE",
+		"message":      "Growth and Growth+Ads tiers are coming soon. Join the waitlist at /v1/waitlist/join to get early access.",
+		"waitlist_url": "/v1/waitlist/join",
+	})
+
 	merchantIDVal := c.Locals("kaughtman.merchant_id")
 	merchantID, ok := merchantIDVal.(string)
 	if !ok || merchantID == "" {

@@ -259,6 +259,9 @@ type InsightsResponse struct {
     CapiEnabled          bool         `json:"capi_enabled"`
     GrowthMonthlyINR     int          `json:"growth_monthly_inr"`
     GrowthAdsMonthlyINR  int          `json:"growth_ads_monthly_inr"`
+    PaidTiersAvailable   bool         `json:"paid_tiers_available"`
+    WaitlistURL          string       `json:"waitlist_url"`
+    WaitlistJoined       bool         `json:"waitlist_joined"`
     BuyerLoyalty         BuyerLoyaltyInsights `json:"buyer_loyalty"`
 
     // =========================================================

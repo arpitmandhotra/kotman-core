@@ -197,6 +197,8 @@ func main() {
 		pincodeHandler.GetPincode,
 	)
 
+	app.Post("/v1/waitlist/join", ipLimiter, onboardingHandler.JoinWaitlist)
+
 	// Score API Endpoints
 	app.Get("/v1/merchants/:id/scores",
 		middleware.RequireAPIKey(postgresClient, redisClient),
@@ -263,6 +265,7 @@ func main() {
 	adminGroup.Get("/subscriptions", adminHandler.GetSubscriptionStatus)
 	adminGroup.Post("/backfill/retrigger-all", adminHandler.RetriggerAllBackfills)
 	adminGroup.Get("/merchants/sync-quality", adminHandler.GetMerchantSyncQuality)
+	adminGroup.Get("/waitlist", onboardingHandler.GetWaitlist)
 
 	// ==========================================
 	// 5. HEALTH CHECK & START UP

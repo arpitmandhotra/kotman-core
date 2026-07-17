@@ -252,6 +252,11 @@ func main() {
 		log.Fatalf("❌ Failed to migrate OrderLineItem: %v", err)
 	}
 
+	log.Println("📦 Syncing domain.WaitlistEntry schema...")
+	if err := db.AutoMigrate(&domain.WaitlistEntry{}); err != nil {
+		log.Fatalf("❌ Failed to migrate WaitlistEntry: %v", err)
+	}
+
 	// Phase 2 cache table — lives in public schema alongside billable_events
 	log.Println("📦 Syncing classification.ProductCategoryCache schema...")
 	if err := db.AutoMigrate(&classification.ProductCategoryCache{}); err != nil {

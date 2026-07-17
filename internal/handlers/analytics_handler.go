@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 	"log/slog"
 	"time"
 
@@ -210,6 +211,9 @@ func (h *AnalyticsHandler) GetMerchantInsights(c *fiber.Ctx) error {
 		CapiEnabled:              capiEnabled,
 		GrowthMonthlyINR:         domain.GrowthMonthlyPaise / 100,
 		GrowthAdsMonthlyINR:      domain.GrowthAdsMonthlyPaise / 100,
+		PaidTiersAvailable:      false,
+		WaitlistURL:             "/v1/waitlist/join",
+		WaitlistJoined:          checkWaitlistMembership(h.pg, merchant.Email),
 		BuyerLoyalty:             loyaltyInsights,
 		OwnStore:                 ownStore,
 		CrossNetwork:             crossNetwork,
@@ -1349,4 +1353,16 @@ func (h *AnalyticsHandler) GetBuyerIntelligence(c *fiber.Ctx) error {
 	h.redis.Set(ctx, cacheKey, respJSON, 6*time.Hour)
 
 	return c.JSON(resp)
+}
+
+func checkWaitlistMembership(db *gorm.DB, email string) bool {
+	if email == "" {
+		return false
+	}
+	var count int64
+	err := db.Table("waitlist_entries").
+		Where("lower(email) = ?", strings.ToLower(email)).
+		Limit(1).
+		Count(&count).Error
+	return err == nil && count > 0
 }
