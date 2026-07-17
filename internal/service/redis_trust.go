@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"math"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/arpitmandhotra/api-integrator/internal/domain"
@@ -126,6 +127,33 @@ func (s *RedisTrustService) EvaluateRisk(ctx context.Context, phoneHash string, 
 		// Compute a real score from profile data
 		features := record.GenerateAIFeatures(0)
 		score := 100.0
+
+		var orders []domain.Order
+		if dbErr := s.pg.Where("buyer_phone_normalized = ?", phoneHash).Find(&orders).Error; dbErr == nil && len(orders) > 0 {
+			var weightedTotalOrders float64
+			var weightedRTOs float64
+			var weightedCancellations float64
+
+			for _, o := range orders {
+				ageMonths := int(math.Floor(time.Since(o.CreatedAt).Hours() / 24 / 30))
+				weight := domain.OrderWeight(ageMonths)
+
+				weightedTotalOrders += weight
+				if o.Outcome == "RTO" || o.FulfillmentStatus == "rto" {
+					weightedRTOs += weight
+				}
+				if o.Outcome == "CANCELLED" || strings.ToLower(o.FulfillmentStatus) == "cancelled" {
+					weightedCancellations += weight
+				}
+			}
+
+			if weightedTotalOrders > 0 {
+				rtoRate := weightedRTOs / weightedTotalOrders
+				cancelRate := weightedCancellations / weightedTotalOrders
+				features["network_rto_rate"] = rtoRate
+				features["cancellation_frequency"] = cancelRate
+			}
+		}
 
 		// Apply RTO rate penalty (biggest signal)
 		if rtoRate, ok := features["network_rto_rate"].(float64); ok {

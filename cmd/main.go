@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"log/slog"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"github.com/arpitmandhotra/api-integrator/internal/billing"
 	"github.com/arpitmandhotra/api-integrator/internal/database"
 	"github.com/arpitmandhotra/api-integrator/internal/handlers"
+	"github.com/arpitmandhotra/api-integrator/internal/integrations/backfill"
 	"github.com/arpitmandhotra/api-integrator/internal/logger"
 	"github.com/arpitmandhotra/api-integrator/internal/middleware"
 	"github.com/arpitmandhotra/api-integrator/internal/service"
@@ -63,6 +65,7 @@ func main() {
 	onboardingHandler := handlers.NewOnboardingHandler(postgresClient)
 	billingHandler := handlers.NewBillingHandler(postgresClient, redisClient)
 	scoreHandler := handlers.NewScoreHandler(postgresClient)
+	pincodeHandler := handlers.NewPincodeHandler(postgresClient, redisClient)
 
 	// ==========================================
 	// 3. THE ROUTER & MIDDLEWARE LAYER
@@ -131,6 +134,10 @@ func main() {
 	app.Get("/auth/woocommerce/start", ipLimiter, oauthHandler.HandleWooCommerceAuthStart)
 	app.Post("/auth/woocommerce/callback", ipLimiter, oauthHandler.HandleWooCommerceCallback)
 	app.Get("/auth/woocommerce/return", ipLimiter, oauthHandler.HandleWooCommerceReturn)
+	app.Post("/v1/integrations/magento/connect",
+		middleware.RequireAPIKey(postgresClient, redisClient),
+		oauthHandler.HandleMagentoConnect,
+	)
 
 	// DOOR B: The Omni-Channel Webhook Listeners
 	webhookGroup := app.Group("/v1/webhooks")
@@ -178,6 +185,11 @@ func main() {
 	app.Get("/v1/merchants/buyer-intelligence",
 		middleware.RequireAPIKey(postgresClient, redisClient),
 		analyticsHandler.GetBuyerIntelligence,
+	)
+
+	app.Get("/v1/pincode/:pincode",
+		ipLimiter,
+		pincodeHandler.GetPincode,
 	)
 
 	// Score API Endpoints
@@ -262,16 +274,26 @@ func main() {
 		}
 
 		if redisErr != nil || postgresErr != nil {
+			if redisErr != nil {
+				slog.Error("health check: redis unreachable", "error", redisErr)
+			}
+			if postgresErr != nil {
+				slog.Error("health check: postgres unreachable", "error", postgresErr)
+			}
 			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
-				"status":   "unhealthy",
-				"redis":    redisErr == nil,
-				"postgres": postgresErr == nil,
+				"status": "unhealthy",
 			})
 		}
 		return c.Status(fiber.StatusOK).JSON(fiber.Map{
 			"status": "healthy",
 		})
 	})
+
+	pollerCtx, cancelPoller := context.WithCancel(context.Background())
+	defer cancelPoller()
+
+	// Start Shopify bulk operation poller
+	go backfill.StartPoller(pollerCtx, postgresClient, redisClient)
 
 	// Run server in a goroutine so it doesn't block the signal listener
 	go func() {

@@ -11,6 +11,7 @@ type PlatformType string
 const (
 	PlatformShopify     PlatformType = "SHOPIFY"
 	PlatformWooCommerce PlatformType = "WOOCOMMERCE"
+	PlatformMagento     PlatformType = "MAGENTO"
 )
 
 // Decimal maps float64 value directly to numeric database columns.
@@ -47,6 +48,11 @@ type Order struct {
 	ShippingAddressPincode string    `gorm:"default:''" json:"shipping_address_pincode"`
 	City                   string    `gorm:"default:''" json:"city"`
 	State                  string    `gorm:"default:''" json:"state"`
+	GeoState               string    `gorm:"default:''" json:"geo_state"`
+	GeoTier                string    `gorm:"default:''" json:"geo_tier"`
+	GeoDistrict            string    `gorm:"default:''" json:"geo_district"`
+	GeoLatitude            float64   `gorm:"type:decimal(10,7);default:0.0" json:"geo_latitude"`
+	GeoLongitude           float64   `gorm:"type:decimal(10,7);default:0.0" json:"geo_longitude"`
 }
 
 type OrderLineItem struct {
@@ -58,4 +64,24 @@ type OrderLineItem struct {
 	Price      Decimal   `gorm:"type:numeric(12,4);not null"`
 	CategoryL1 string    `gorm:"index;default:''"` // Immutable Category L1 snapshot at order time
 	CategoryL2 string    `gorm:"default:''"`       // Immutable Category L2 snapshot at order time
+}
+
+var OrderTimeDecayWeights = []struct {
+	MaxAgeMonths int
+	Weight       float64
+}{
+	{MaxAgeMonths: 6,  Weight: 1.0},
+	{MaxAgeMonths: 12, Weight: 0.8},
+	{MaxAgeMonths: 24, Weight: 0.5},
+	{MaxAgeMonths: 36, Weight: 0.3},
+}
+
+// OrderWeight returns the time-decay weight for a given age in months.
+func OrderWeight(ageMonths int) float64 {
+	for _, w := range OrderTimeDecayWeights {
+		if ageMonths <= w.MaxAgeMonths {
+			return w.Weight
+		}
+	}
+	return 0.3 // cap at 36-month weight, never zero
 }

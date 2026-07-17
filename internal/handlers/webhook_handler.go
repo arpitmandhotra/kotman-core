@@ -545,6 +545,27 @@ func (h *WebhookHandler) HandleShopifyUninstall(c *fiber.Ctx) error {
 }
 
 func (h *WebhookHandler) HandleShopifyCustomersDataRequest(c *fiber.Ctx) error {
+	var payload struct {
+		ShopDomain string `json:"shop_domain"`
+		Customer   struct {
+			Phone string `json:"phone"`
+		} `json:"customer"`
+		OrdersRequested []int64 `json:"orders_requested"`
+	}
+	if err := c.BodyParser(&payload); err != nil {
+		return c.SendStatus(fiber.StatusOK)
+	}
+
+	slog.Info("shopify GDPR data request received",
+		"shop", payload.ShopDomain,
+		"orders_count", len(payload.OrdersRequested),
+		"request_timestamp", time.Now().UTC().Format(time.RFC3339),
+	)
+
+	// Kaughtman is a Data Processor under DPDP/GDPR.
+	// We store only phone hashes, never raw PII.
+	// No personal data export is possible or required.
+	// Log receipt for compliance audit trail and return 200.
 	return c.SendStatus(fiber.StatusOK)
 }
 

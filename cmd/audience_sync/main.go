@@ -78,23 +78,57 @@ func RunAudienceSync(pg *gorm.DB) error {
         // a. Query to find high-trust verified buyers for this merchant
         // SYNC WITH: internal/service/redis_trust.go EvaluateRisk
         query := `
+            WITH weighted_stats AS (
+                SELECT 
+                    o.buyer_phone_normalized,
+                    SUM(
+                        CASE 
+                            WHEN EXTRACT(YEAR FROM age(NOW(), o.created_at)) * 12 + EXTRACT(MONTH FROM age(NOW(), o.created_at)) <= 6 THEN 1.0
+                            WHEN EXTRACT(YEAR FROM age(NOW(), o.created_at)) * 12 + EXTRACT(MONTH FROM age(NOW(), o.created_at)) <= 12 THEN 0.8
+                            WHEN EXTRACT(YEAR FROM age(NOW(), o.created_at)) * 12 + EXTRACT(MONTH FROM age(NOW(), o.created_at)) <= 24 THEN 0.5
+                            ELSE 0.3
+                        END
+                    ) as w_total,
+                    SUM(
+                        CASE WHEN o.outcome = 'RTO' OR o.fulfillment_status = 'rto' THEN
+                            CASE 
+                                WHEN EXTRACT(YEAR FROM age(NOW(), o.created_at)) * 12 + EXTRACT(MONTH FROM age(NOW(), o.created_at)) <= 6 THEN 1.0
+                                WHEN EXTRACT(YEAR FROM age(NOW(), o.created_at)) * 12 + EXTRACT(MONTH FROM age(NOW(), o.created_at)) <= 12 THEN 0.8
+                                WHEN EXTRACT(YEAR FROM age(NOW(), o.created_at)) * 12 + EXTRACT(MONTH FROM age(NOW(), o.created_at)) <= 24 THEN 0.5
+                                ELSE 0.3
+                            END
+                        ELSE 0.0 END
+                    ) as w_rto,
+                    SUM(
+                        CASE WHEN o.outcome = 'CANCELLED' OR o.fulfillment_status = 'cancelled' THEN
+                            CASE 
+                                WHEN EXTRACT(YEAR FROM age(NOW(), o.created_at)) * 12 + EXTRACT(MONTH FROM age(NOW(), o.created_at)) <= 6 THEN 1.0
+                                WHEN EXTRACT(YEAR FROM age(NOW(), o.created_at)) * 12 + EXTRACT(MONTH FROM age(NOW(), o.created_at)) <= 12 THEN 0.8
+                                WHEN EXTRACT(YEAR FROM age(NOW(), o.created_at)) * 12 + EXTRACT(MONTH FROM age(NOW(), o.created_at)) <= 24 THEN 0.5
+                                ELSE 0.3
+                            END
+                        ELSE 0.0 END
+                    ) as w_cancel
+                FROM orders o
+                GROUP BY o.buyer_phone_normalized
+            )
             SELECT DISTINCT be.phone_hash_meta
             FROM billable_events be
             INNER JOIN trust_profiles tp ON tp.phone_hash = be.phone_hash
+            LEFT JOIN weighted_stats ws ON ws.buyer_phone_normalized = be.phone_hash
             WHERE be.merchant_id = ?
               AND be.created_at >= NOW() - INTERVAL '90 days'
               AND be.is_billable = true
               AND be.phone_hash_meta != ''
               AND tp.is_blacklisted = false
-              AND tp.total_rtos::float / NULLIF(tp.total_orders, 0) < 0.10
-              AND tp.total_orders >= 3
+              AND COALESCE(ws.w_rto / NULLIF(ws.w_total, 0), tp.total_rtos::float / NULLIF(tp.total_orders, 0), 0) < 0.10
+              AND COALESCE(ws.w_total, tp.total_orders::float, 0) >= 3
               AND (
-                    (tp.total_orders > 0 AND
-                     (100.0
-                      - (tp.total_rtos::float / NULLIF(tp.total_orders, 0)) * 60
-                      - (tp.total_cancellations::float / NULLIF(tp.total_orders, 0)) * 20
+                    (100.0
+                      - COALESCE(ws.w_rto / NULLIF(ws.w_total, 0), tp.total_rtos::float / NULLIF(tp.total_orders, 0), 0) * 60
+                      - COALESCE(ws.w_cancel / NULLIF(ws.w_total, 0), tp.total_cancellations::float / NULLIF(tp.total_orders, 0), 0) * 20
                       + tp.risk_adjustment)
-                     >= 75.0)
+                     >= 75.0
                   )
         `
 

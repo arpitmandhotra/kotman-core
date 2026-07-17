@@ -10,6 +10,7 @@ type Merchant struct {
 	APIKeyHash string `gorm:"uniqueIndex;not null"`
 
 	Platform  string `gorm:"not null;default:'shopify'"`
+	MagentoBaseURL string `gorm:"default:''"`
 	// --- V2 ONBOARDING UPGRADES ---
 	IsActive  bool      `gorm:"default:true"` // Allows us to disable bad merchants
 	
@@ -41,7 +42,30 @@ type Merchant struct {
 	// prevent mislabelling delivered orders as RTOs.
 	FulfillmentSyncQuality    *float64   `gorm:"type:numeric(5,4);default:null" json:"fulfillment_sync_quality,omitempty"`
 	FulfillmentSyncComputedAt *time.Time `gorm:"default:null"                   json:"fulfillment_sync_computed_at,omitempty"`
+
+	BackfillStatus        MerchantBackfillStatus `gorm:"not null;default:'not_started'" json:"backfill_status"`
+	BackfillStartedAt     *time.Time             `json:"backfill_started_at"`
+	BackfillCompletedAt   *time.Time             `json:"backfill_completed_at"`
+	BackfillOrderCount    int                    `gorm:"default:0" json:"backfill_order_count"`
+	BackfillHorizonAt     time.Time              `json:"backfill_horizon_at"`
+	BackfillErrorMessage  string                 `json:"backfill_error_message"`
+	ShopifyCreatedAt      *time.Time             `json:"shopify_created_at"`
+	WooCreatedAt          *time.Time             `json:"woo_created_at"`
+	MagentoCreatedAt      *time.Time             `json:"magento_created_at"`
 }
+
+type MerchantBackfillStatus string
+
+const (
+	BackfillNotStarted  MerchantBackfillStatus = "not_started"
+	BackfillPending     MerchantBackfillStatus = "pending"     // bulk op submitted, not yet complete
+	BackfillInProgress  MerchantBackfillStatus = "in_progress" // downloading/processing JSONL
+	BackfillComplete    MerchantBackfillStatus = "complete"
+	BackfillFailed      MerchantBackfillStatus = "failed"
+)
+
+const ORDER_BACKFILL_MONTHS = 36
+
 
 type MerchantTier string
 
@@ -236,6 +260,18 @@ type InsightsResponse struct {
     // In shadow mode: show simulated/projected values with is_simulated = true.
     // =========================================================
     RTOEngine RTOEngineAnalytics `json:"rto_engine"`
+
+    // =========================================================
+    // SECTION D — HISTORICAL BACKFILL STATUS
+    // =========================================================
+    Backfill BackfillStats `json:"backfill"`
+}
+
+type BackfillStats struct {
+	Status      string     `json:"status"`
+	OrderCount  int        `json:"order_count"`
+	HorizonAt   time.Time  `json:"horizon_at"`
+	CompletedAt *time.Time `json:"completed_at"`
 }
 
 // OwnStoreAnalytics — derived entirely from this merchant's OrderAudit and TrustProfile data.

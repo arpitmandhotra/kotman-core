@@ -2,10 +2,7 @@ package handlers
 
 import (
 	"context"
-	"fmt"
-	"io"
 	"log/slog"
-	"net/http"
 	"net/url"
 	"strings"
 	"time"
@@ -32,10 +29,6 @@ type MagentoOnboardRequest struct {
 	IntegrationToken string `json:"integration_token"`
 }
 
-var magentoHttpClient = &http.Client{
-	Timeout: 10 * time.Second,
-}
-
 func (h *MagentoOnboardHandler) HandleMagentoOnboard(c *fiber.Ctx) error {
 	var req MagentoOnboardRequest
 	if err := c.BodyParser(&req); err != nil {
@@ -54,48 +47,32 @@ func (h *MagentoOnboardHandler) HandleMagentoOnboard(c *fiber.Ctx) error {
 		})
 	}
 
-	// Validate store_base_url is well-formed https:// URL
-	u, err := url.Parse(req.StoreBaseURL)
-	if err != nil || u.Scheme != "https" || u.Host == "" {
+	// Clean trailing slash and validate store url
+	baseURL := strings.TrimSpace(req.StoreBaseURL)
+	baseURL = strings.TrimSuffix(baseURL, "/")
+	if !strings.HasPrefix(baseURL, "https://") && !strings.HasPrefix(baseURL, "http://") {
+		baseURL = "https://" + baseURL
+	}
+	u, err := url.Parse(baseURL)
+	if err != nil || u.Scheme != "https" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "invalid store_base_url: must be a secure https:// URL",
+			"error": "Magento stores must use HTTPS secure connection",
 		})
 	}
 
-	// Clean trailing slash
-	baseURL := strings.TrimSuffix(req.StoreBaseURL, "/")
-
-	// Test the integration token
-	testURL := fmt.Sprintf("%s/rest/V1/store/storeConfigs", baseURL)
-	ctx, cancel := context.WithTimeout(c.UserContext(), 10*time.Second)
-	defer cancel()
-
-	testReq, err := http.NewRequestWithContext(ctx, http.MethodGet, testURL, nil)
+	ctx := c.UserContext()
+	_, _, err = backfill.VerifyMagentoConnection(ctx, baseURL, req.IntegrationToken)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "failed to construct Magento validation request",
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": err.Error(),
 		})
 	}
-	testReq.Header.Set("Authorization", "Bearer "+req.IntegrationToken)
-	testReq.Header.Set("Content-Type", "application/json")
 
-	resp, err := magentoHttpClient.Do(testReq)
+	// Fetch oldest order date
+	oldestOrderDate, err := backfill.FetchMagentoOldestOrderDate(ctx, baseURL, req.IntegrationToken)
 	if err != nil {
-		slog.Error("failed testing Magento integration token", "error", err, "url", testURL)
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "failed connecting to Magento store base URL",
-		})
-	}
-	defer func() {
-		io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
-		resp.Body.Close()
-	}()
-
-	if resp.StatusCode != http.StatusOK {
-		slog.Warn("Magento token validation request rejected", "status", resp.StatusCode)
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "Invalid Magento integration token — verify it has not expired and has Sales/Orders read permissions",
-		})
+		slog.Warn("failed to fetch oldest Magento order date, defaulting to now", "error", err)
+		oldestOrderDate = time.Now().UTC()
 	}
 
 	// Encrypt the Magento integration token
@@ -120,11 +97,13 @@ func (h *MagentoOnboardHandler) HandleMagentoOnboard(c *fiber.Ctx) error {
 	// Transaction to insert Merchant + PlatformCredential
 	err = h.pg.Transaction(func(tx *gorm.DB) error {
 		merchant := domain.Merchant{
-			ID:         merchantID,
-			StoreName:  req.StoreName,
-			APIKeyHash: crypto.HashAPIKey(apiKey),
-			Platform:   "magento",
-			IsActive:   true,
+			ID:               merchantID,
+			StoreName:        req.StoreName,
+			APIKeyHash:       crypto.HashAPIKey(apiKey),
+			Platform:         "magento",
+			MagentoBaseURL:   baseURL,
+			MagentoCreatedAt: &oldestOrderDate,
+			IsActive:         true,
 		}
 		if err := tx.Create(&merchant).Error; err != nil {
 			return err
@@ -159,14 +138,9 @@ func (h *MagentoOnboardHandler) HandleMagentoOnboard(c *fiber.Ctx) error {
 		})
 	}
 
-	// Kick off historical backfill async
-	go func() {
-		backfillCtx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
-		defer cancel()
-		if backfillErr := backfill.BackfillOrderHistory(backfillCtx, merchantID, "magento"); backfillErr != nil {
-			slog.Error("magento historical order backfill failed", "merchant_id", merchantID, "error", backfillErr)
-		}
-	}()
+	if enqErr := backfill.MagentoBackfillQueue.Enqueue(context.Background(), merchantID); enqErr != nil {
+		slog.Error("failed to enqueue magento backfill", "merchant_id", merchantID, "error", enqErr)
+	}
 
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
 		"message":     "Magento store onboarded successfully",
