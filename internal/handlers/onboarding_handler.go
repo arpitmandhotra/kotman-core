@@ -507,10 +507,16 @@ func (h *OnboardingHandler) JoinWaitlist(c *fiber.Ctx) error {
 	if tierInterest == "" {
 		tierInterest = "growth"
 	}
-	if tierInterest != "growth" && tierInterest != "growth_ads" && tierInterest != "both" {
+	validInterests := map[string]bool{
+		"growth":     true,
+		"growth_ads": true,
+		"rto_engine": true,
+		"all":        true,
+	}
+	if !validInterests[tierInterest] {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"success": false,
-			"error":   "invalid tier_interest. Must be 'growth', 'growth_ads', or 'both'",
+			"error":   "tier_interest must be one of: growth, growth_ads, rto_engine, all",
 		})
 	}
 

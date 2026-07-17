@@ -67,7 +67,7 @@ func (s *ScoreService) ComputeAllMerchantScores(ctx context.Context) error {
 		}
 
 		// 3. Buyer Quality Score (weekly cadence, growth tier only)
-		if m.HasPaidSubscription {
+		if m.HasPaidSubscription || domain.IsFoundingPeriodActive() {
 			if err := s.ComputeBuyerQualityScore(merchantCtx, m); err != nil {
 				slog.Error("failed computing Buyer Quality Score", "merchant_id", m.ID, "error", err)
 			}

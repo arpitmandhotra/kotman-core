@@ -27,6 +27,15 @@ func (TestMerchantSettings) TableName() string {
 	return "merchant_settings"
 }
 
+type TestMerchant struct {
+	ID           string `gorm:"primaryKey"`
+	HasRTOEngine bool
+}
+
+func (TestMerchant) TableName() string {
+	return "merchants"
+}
+
 func TestProcessInboundOrder_IdempotencyAndAccumulator(t *testing.T) {
 	// Setup pure-Go SQLite in-memory database
 	db, err := gorm.Open(sqlite.Open("file::memory:?cache=shared"), &gorm.Config{})
@@ -39,6 +48,7 @@ func TestProcessInboundOrder_IdempotencyAndAccumulator(t *testing.T) {
 		&TestMerchantSettings{},
 		&domain.BillableEvent{},
 		&domain.MerchantBillingAccumulator{},
+		&TestMerchant{},
 	)
 	if err != nil {
 		t.Fatalf("failed to migrate models: %v", err)
@@ -60,6 +70,11 @@ func TestProcessInboundOrder_IdempotencyAndAccumulator(t *testing.T) {
 	}
 	if err := db.Create(&mSettings).Error; err != nil {
 		t.Fatalf("failed to seed merchant settings: %v", err)
+	}
+
+	// Seed merchant
+	if err := db.Create(&TestMerchant{ID: merchantID, HasRTOEngine: true}).Error; err != nil {
+		t.Fatalf("failed to seed merchant: %v", err)
 	}
 
 	// Sample raw payload body (Shopify order)
@@ -153,6 +168,7 @@ func TestProcessOrderCreditBack(t *testing.T) {
 		&TestMerchantSettings{},
 		&domain.BillableEvent{},
 		&domain.MerchantBillingAccumulator{},
+		&TestMerchant{},
 	)
 	if err != nil {
 		t.Fatalf("failed to migrate models: %v", err)
@@ -170,6 +186,7 @@ func TestProcessOrderCreditBack(t *testing.T) {
 	if err := db.Create(&mSettings).Error; err != nil {
 		t.Fatalf("failed to seed merchant settings: %v", err)
 	}
+	db.Create(&TestMerchant{ID: merchantID, HasRTOEngine: true})
 
 	ctx := context.Background()
 	rawJSON := `{
@@ -232,6 +249,7 @@ func TestProcessInboundOrder_SignalsAsynchronousEnrichment(t *testing.T) {
 		&domain.BillableEvent{},
 		&domain.MerchantBillingAccumulator{},
 		&classification.ProductCategoryCache{},
+		&TestMerchant{},
 	)
 	if err != nil {
 		t.Fatalf("failed to migrate models: %v", err)
@@ -247,6 +265,7 @@ func TestProcessInboundOrder_SignalsAsynchronousEnrichment(t *testing.T) {
 		WalletBalancePaise: 10000,
 	}
 	db.Create(&mSettings)
+	db.Create(&TestMerchant{ID: merchantID, HasRTOEngine: true})
 
 	// Pre-seed classification cache to avoid Gemini API network calls
 	// SHA-256 of "smart phone" (lowercased, trimmed) is e75cdc89b7b1d235a7ee10bf6aa9ac2c30e07e7ae4236eb99288e0020e18cfc7

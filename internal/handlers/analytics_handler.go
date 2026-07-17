@@ -212,6 +212,7 @@ func (h *AnalyticsHandler) GetMerchantInsights(c *fiber.Ctx) error {
 		GrowthMonthlyINR:         domain.GrowthMonthlyPaise / 100,
 		GrowthAdsMonthlyINR:      domain.GrowthAdsMonthlyPaise / 100,
 		PaidTiersAvailable:      false,
+		RTOEngineAvailable:      false,
 		WaitlistURL:             "/v1/waitlist/join",
 		WaitlistJoined:          checkWaitlistMembership(h.pg, merchant.Email),
 		BuyerLoyalty:             loyaltyInsights,

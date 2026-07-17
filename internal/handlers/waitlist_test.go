@@ -89,7 +89,7 @@ func TestWaitlist(t *testing.T) {
 	})
 
 	t.Run("POST /v1/waitlist/join - logged in merchant", func(t *testing.T) {
-		body := `{"email": "merchant@store.com", "store_name": "Merchant Store", "tier_interest": "both"}`
+		body := `{"email": "merchant@store.com", "store_name": "Merchant Store", "tier_interest": "all"}`
 		req := httptest.NewRequest("POST", "/v1/waitlist/join", bytes.NewBufferString(body))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("X-API-Key", apiKey)
@@ -136,7 +136,7 @@ func TestWaitlist(t *testing.T) {
 	})
 
 	t.Run("POST /v1/waitlist/join - conflict upsert", func(t *testing.T) {
-		body := `{"email": "visitor@example.com", "store_name": "Visitor Shop Updated", "tier_interest": "both"}`
+		body := `{"email": "visitor@example.com", "store_name": "Visitor Shop Updated", "tier_interest": "all"}`
 		req := httptest.NewRequest("POST", "/v1/waitlist/join", bytes.NewBufferString(body))
 		req.Header.Set("Content-Type", "application/json")
 		resp, _ := app.Test(req)
@@ -152,13 +152,13 @@ func TestWaitlist(t *testing.T) {
 		if entry.StoreName != "Visitor Shop Updated" {
 			t.Errorf("expected updated store name 'Visitor Shop Updated', got '%s'", entry.StoreName)
 		}
-		if entry.TierInterest != "both" {
-			t.Errorf("expected updated tier_interest 'both', got '%s'", entry.TierInterest)
+		if entry.TierInterest != "all" {
+			t.Errorf("expected updated tier_interest 'all', got '%s'", entry.TierInterest)
 		}
 	})
 
 	t.Run("GET /v1/admin/waitlist", func(t *testing.T) {
-		req := httptest.NewRequest("GET", "/v1/admin/waitlist?tier=both", nil)
+		req := httptest.NewRequest("GET", "/v1/admin/waitlist?tier=all", nil)
 		resp, err := app.Test(req)
 		if err != nil {
 			t.Fatalf("request failed: %v", err)
@@ -220,6 +220,38 @@ func TestGatedBillingEndpoints(t *testing.T) {
 		json.NewDecoder(resp.Body).Decode(&resMap)
 		if resMap["code"] != "TIER_NOT_YET_AVAILABLE" {
 			t.Errorf("expected code TIER_NOT_YET_AVAILABLE, got %s", resMap["code"])
+		}
+	})
+
+	t.Run("VerifyPaymentAndActivate (RTO Engine) is gated", func(t *testing.T) {
+		app.Post("/v1/billing/verify", billingHandler.VerifyPaymentAndActivate)
+		req := httptest.NewRequest("POST", "/v1/billing/verify", nil)
+		resp, _ := app.Test(req)
+
+		if resp.StatusCode != http.StatusServiceUnavailable {
+			t.Errorf("expected status 503, got %d", resp.StatusCode)
+		}
+
+		var resMap map[string]interface{}
+		json.NewDecoder(resp.Body).Decode(&resMap)
+		if resMap["code"] != "RTO_ENGINE_NOT_YET_AVAILABLE" {
+			t.Errorf("expected code RTO_ENGINE_NOT_YET_AVAILABLE, got %s", resMap["code"])
+		}
+	})
+
+	t.Run("CreateWalletTopUp is gated", func(t *testing.T) {
+		app.Post("/v1/billing/order", billingHandler.CreateWalletTopUp)
+		req := httptest.NewRequest("POST", "/v1/billing/order", nil)
+		resp, _ := app.Test(req)
+
+		if resp.StatusCode != http.StatusServiceUnavailable {
+			t.Errorf("expected status 503, got %d", resp.StatusCode)
+		}
+
+		var resMap map[string]interface{}
+		json.NewDecoder(resp.Body).Decode(&resMap)
+		if resMap["code"] != "RTO_ENGINE_NOT_YET_AVAILABLE" {
+			t.Errorf("expected code RTO_ENGINE_NOT_YET_AVAILABLE, got %s", resMap["code"])
 		}
 	})
 }

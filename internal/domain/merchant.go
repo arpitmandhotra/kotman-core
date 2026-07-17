@@ -79,21 +79,22 @@ const (
 func IsGrowthOrAbove(tier MerchantTier) bool {
 	return tier == TierGrowth || tier == TierGrowthAds
 }
-
 // CrossNetworkActive returns true if the merchant has access to cross-network intelligence.
 func (m *Merchant) CrossNetworkActive() bool {
-	return IsGrowthOrAbove(m.Tier) || time.Now().Before(m.CreatedAt.AddDate(0, 0, 30))
+	return IsGrowthOrAbove(m.Tier) || IsFoundingPeriodActive()
 }
 
 // CRMUpsellActive returns true if the merchant has access to the CRM Upsell/Recovery module.
 func (m *Merchant) CRMUpsellActive() bool {
-	return IsGrowthOrAbove(m.Tier) || time.Now().Before(m.CreatedAt.AddDate(0, 0, 30))
+	return IsGrowthOrAbove(m.Tier) || IsFoundingPeriodActive()
 }
 
 // WhatsAppMessagingActive returns true if the merchant is eligible to use Kaughtman-managed WhatsApp messaging.
-// Gated under the Paid Tier (requires paid subscription or active 30-day trial).
 func (m *Merchant) WhatsAppMessagingActive() bool {
-	return IsGrowthOrAbove(m.Tier) || time.Now().Before(m.CreatedAt.AddDate(0, 0, 30))
+	if IsFoundingPeriodActive() {
+		return IsGrowthOrAbove(m.Tier) // during founding: only if explicitly on growth tier (nobody is)
+	}
+	return IsGrowthOrAbove(m.Tier) // post-founding: same rule
 }
 
 // InActiveMode returns true if this merchant should have live RTO enforcement running.
@@ -260,6 +261,7 @@ type InsightsResponse struct {
     GrowthMonthlyINR     int          `json:"growth_monthly_inr"`
     GrowthAdsMonthlyINR  int          `json:"growth_ads_monthly_inr"`
     PaidTiersAvailable   bool         `json:"paid_tiers_available"`
+    RTOEngineAvailable   bool         `json:"rto_engine_available"`
     WaitlistURL          string       `json:"waitlist_url"`
     WaitlistJoined       bool         `json:"waitlist_joined"`
     BuyerLoyalty         BuyerLoyaltyInsights `json:"buyer_loyalty"`

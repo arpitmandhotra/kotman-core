@@ -41,6 +41,11 @@ func main() {
 	}
 
 	slog.Info("targeting billing month", "month", billingMonth)
+	slog.Info("invoice cron starting",
+		"billing_month", billingMonth,
+		"paid_tiers_available", false, // update when Growth launches
+		"rto_engine_available", false, // update when RTO Engine launches
+	)
 
 	// 1. Find all MerchantBillingAccumulator rows where billing_month = last calendar month AND is_invoiced = false AND total_fee_paise > 0
 	var accumulators []domain.MerchantBillingAccumulator

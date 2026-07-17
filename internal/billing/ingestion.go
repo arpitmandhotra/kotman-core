@@ -153,10 +153,22 @@ func getString(m map[string]interface{}, keys ...string) string {
 	return ""
 }
 
-// ProcessInboundOrder handles order ingestion, mode detection, fee computation, and database updates.
 func ProcessInboundOrder(ctx context.Context, platform string, merchantID string, rawBody []byte) error {
 	if DB == nil {
 		return fmt.Errorf("database client not initialized in billing package")
+	}
+
+	var merchant domain.Merchant
+	if err := DB.WithContext(ctx).Select("id", "has_rto_engine").Where("id = ?", merchantID).First(&merchant).Error; err != nil {
+		return fmt.Errorf("failed to fetch merchant: %w", err)
+	}
+
+	// RTO Engine is not yet live — do not create BillableEvent rows or accumulate fees
+	// Remove this block when RTO Engine launches
+	if !merchant.HasRTOEngine {
+		// This will always be true during coming soon period since
+		// VerifyPaymentAndActivate is gated and no merchant can activate
+		return nil
 	}
 
 	// STEP 1: Parse the raw payload into an internal OrderPayload struct

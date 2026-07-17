@@ -36,14 +36,22 @@ type VerifyRequest struct {
 
 // CreateWalletTopUp is deprecated under postpaid billing.
 func (h *BillingHandler) CreateWalletTopUp(c *fiber.Ctx) error {
-	return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+	return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
 		"success": false,
-		"error":   "Wallet top-up is deprecated under postpaid billing. Accounts are billed postpaid at the end of the month.",
+		"code":    "RTO_ENGINE_NOT_YET_AVAILABLE",
+		"message": "RTO Engine billing is not yet active. Join the waitlist at /v1/waitlist/join",
 	})
 }
 
 // VerifyPaymentAndActivate directly transitions the merchant to Active Mode with zero friction.
 func (h *BillingHandler) VerifyPaymentAndActivate(c *fiber.Ctx) error {
+	return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
+		"success":      false,
+		"code":         "RTO_ENGINE_NOT_YET_AVAILABLE",
+		"message":      "The RTO Engine launches with the Growth tier. Join the waitlist to get early access.",
+		"waitlist_url": "/v1/waitlist/join",
+	})
+
 	merchantIDVal := c.Locals("kaughtman.merchant_id")
 	merchantID, ok := merchantIDVal.(string)
 	if !ok || merchantID == "" {
