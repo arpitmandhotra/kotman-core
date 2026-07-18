@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 	"log/slog"
 	"time"
 
@@ -69,11 +70,9 @@ func (h *AnalyticsHandler) GetMerchantInsights(c *fiber.Ctx) error {
 	// =====================================================================
 	showUpgradePrompt := false
 	urgencyLevel := 0
-	shadowDaysPastExpiry := 0
 
 	if !merchant.HasPaidSubscription {
 		if now.After(trialEndsAt) {
-			shadowDaysPastExpiry = int(now.Sub(trialEndsAt).Hours() / 24)
 			showUpgradePrompt = true
 			urgencyLevel = 3 // urgent upgrade prompt every day
 		} else if shadowDaysRemaining <= 5 {
@@ -92,7 +91,7 @@ func (h *AnalyticsHandler) GetMerchantInsights(c *fiber.Ctx) error {
 	// =====================================================================
 	var codOrderCount int64
 	h.pg.WithContext(ctx).Model(&domain.OrderAudit{}).
-		Where("merchant_id = ? AND execution_mode = ?", merchantID, domain.ExecutionModeShadow).
+		Where("merchant_id = ? AND execution_mode = ?", merchantID, "SHADOW").
 		Count(&codOrderCount) // all shadow orders approximate COD (we see everything)
 
 	simSavingsMin := float64(codOrderCount) * 0.15 * 280.0
@@ -155,7 +154,7 @@ func (h *AnalyticsHandler) GetMerchantInsights(c *fiber.Ctx) error {
 	if tierVal == "" {
 		tierVal = domain.TierFree
 	}
-	capiEnabled := merchant.Tier == domain.TierGrowthAds && settings.MetaCAPIEnabled && settings.MetaPixelID != "" && settings.MetaAccessToken != ""
+	capiEnabled := merchant.Tier == domain.TierGrowthAds && settings.MetaCAPIEnabled && settings.MetaPixelID != "" && settings.MetaAccessTokenEncrypted != ""
 
 	// Fetch the most recent BuyerLoyaltySnapshot
 	var snapshot domain.BuyerLoyaltySnapshot
@@ -186,16 +185,21 @@ func (h *AnalyticsHandler) GetMerchantInsights(c *fiber.Ctx) error {
 		statusStr = "not_started"
 	}
 
+	foundingPeriod := domain.FoundingPeriodInfo{
+		Active:              domain.IsFoundingPeriodActive(),
+		EndsAt:              domain.FoundingPeriodEndsAt(),
+		DaysRemaining:       domain.FoundingPeriodDaysRemaining(),
+		AllFeaturesUnlocked: domain.IsFoundingPeriodActive(),
+	}
+
 	resp := domain.InsightsResponse{
 		ExecutionMode:            executionMode,
-		ShadowDaysRemaining:      shadowDaysRemaining,
-		ShadowEndsAt:             trialEndsAt,
 		TotalOrdersAnalyzed:      int(totalOrdersAnalyzed),
 		DataCollectionStartedAt:  merchant.CreatedAt,
 		MinCohortMet:             minCohortMet,
+		FoundingPeriod:           foundingPeriod,
 		ShowUpgradePrompt:        showUpgradePrompt,
 		UpgradeUrgencyLevel:      urgencyLevel,
-		ShadowDaysPastExpiry:     shadowDaysPastExpiry,
 		SimulatedRTOSavingsINR:   simSavingsMid,
 		SimulatedSavingsRangeMin: simSavingsMin,
 		SimulatedSavingsRangeMax: simSavingsMax,
@@ -207,6 +211,10 @@ func (h *AnalyticsHandler) GetMerchantInsights(c *fiber.Ctx) error {
 		CapiEnabled:              capiEnabled,
 		GrowthMonthlyINR:         domain.GrowthMonthlyPaise / 100,
 		GrowthAdsMonthlyINR:      domain.GrowthAdsMonthlyPaise / 100,
+		PaidTiersAvailable:      false,
+		RTOEngineAvailable:      false,
+		WaitlistURL:             "/v1/waitlist/join",
+		WaitlistJoined:          checkWaitlistMembership(h.pg, merchant.Email),
 		BuyerLoyalty:             loyaltyInsights,
 		OwnStore:                 ownStore,
 		CrossNetwork:             crossNetwork,
@@ -1346,4 +1354,16 @@ func (h *AnalyticsHandler) GetBuyerIntelligence(c *fiber.Ctx) error {
 	h.redis.Set(ctx, cacheKey, respJSON, 6*time.Hour)
 
 	return c.JSON(resp)
+}
+
+func checkWaitlistMembership(db *gorm.DB, email string) bool {
+	if email == "" {
+		return false
+	}
+	var count int64
+	err := db.Table("waitlist_entries").
+		Where("lower(email) = ?", strings.ToLower(email)).
+		Limit(1).
+		Count(&count).Error
+	return err == nil && count > 0
 }

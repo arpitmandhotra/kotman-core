@@ -81,7 +81,7 @@ func (w *AIIngestionWorker) processMessage(ctx context.Context, msg redis.XMessa
 
 	var merchant domain.Merchant
 	err := w.pg.WithContext(ctx).
-		Select("id", "is_active", "has_rto_engine", "shadow_mode_ends_at", "store_name").
+		Select("id", "is_active", "has_rto_engine", "store_name").
 		Where("id = ?", merchantIDVal).
 		First(&merchant).Error
 	if err != nil {
@@ -90,11 +90,7 @@ func (w *AIIngestionWorker) processMessage(ctx context.Context, msg redis.XMessa
 		return
 	}
 
-	// Check shadow mode state based on grace period timestamp
-	executionMode := domain.ExecutionModeShadow
-	if merchant.InActiveMode() {
-		executionMode = domain.ExecutionModeActive
-	}
+	executionMode := domain.ExecutionModeActive
 
 	// Parse payload flexibly to locate the Order ID
 	var orderPayload struct {

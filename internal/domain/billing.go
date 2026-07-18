@@ -78,7 +78,7 @@ func KaughtmanFee(orderValuePaise int) int {
 	case orderValuePaise <= 50000:
 		return 500 // ≤ ₹500 → ₹5.00
 	case orderValuePaise <= 100000:
-		return 750 // ≤ ₹1,000 → ₹7.50
+		return 1000 // ≤ ₹1,000 → ₹10.00
 	case orderValuePaise <= 200000:
 		return 1500 // ≤ ₹2,000 → ₹15.00
 	case orderValuePaise <= 300000:

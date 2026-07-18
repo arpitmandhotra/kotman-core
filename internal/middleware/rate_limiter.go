@@ -5,6 +5,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"os"
+	"strconv"
 	"time"
 	"context"
 	"github.com/arpitmandhotra/api-integrator/internal/domain"
@@ -69,7 +71,12 @@ func RequireRateLimit(redisClient *redis.Client) fiber.Handler {
 
 		// 5. Evaluate the Limit (count now includes the current request)
 		currentCount := int(result)
-		limit := 10 // Temporary hardcode, will move to config later
+		limit := 60 // default: 60 requests per minute per merchant
+		if envLimit := os.Getenv("MERCHANT_RATE_LIMIT_PER_MINUTE"); envLimit != "" {
+			if parsed, err := strconv.Atoi(envLimit); err == nil && parsed > 0 {
+				limit = parsed
+			}
+		}
 
 		if currentCount > limit {
 			slog.Warn("rate limit exceeded",

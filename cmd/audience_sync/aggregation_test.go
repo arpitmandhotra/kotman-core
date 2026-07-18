@@ -23,6 +23,7 @@ import (
 )
 
 func TestRunAudienceSync_Integration(t *testing.T) {
+    os.Setenv("TOKEN_ENCRYPTION_KEY", "YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXoxMjM0NTY=")
     ctx := context.Background()
 
     t.Log("Orchestrating isolated Postgres container...")
@@ -81,7 +82,10 @@ func TestRunAudienceSync_Integration(t *testing.T) {
     if err := pgDB.Create(&domain.MerchantSettings{
         MerchantID:         merchantID,
         MetaPixelID:        "pixel_123",
-        MetaAccessToken:    "token_xyz",
+        MetaAccessTokenEncrypted: func() string {
+            enc, _ := crypto.EncryptToken("token_xyz")
+            return enc
+        }(),
         MetaAdAccountID:    "act_123",
         MetaCAPIEnabled:    true,
         WalletBalancePaise: 100000,

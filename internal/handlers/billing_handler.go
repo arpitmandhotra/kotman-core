@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"log/slog"
 	"strings"
 	"time"
@@ -35,14 +36,22 @@ type VerifyRequest struct {
 
 // CreateWalletTopUp is deprecated under postpaid billing.
 func (h *BillingHandler) CreateWalletTopUp(c *fiber.Ctx) error {
-	return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+	return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
 		"success": false,
-		"error":   "Wallet top-up is deprecated under postpaid billing. Accounts are billed postpaid at the end of the month.",
+		"code":    "RTO_ENGINE_NOT_YET_AVAILABLE",
+		"message": "RTO Engine billing is not yet active. Join the waitlist at /v1/waitlist/join",
 	})
 }
 
 // VerifyPaymentAndActivate directly transitions the merchant to Active Mode with zero friction.
 func (h *BillingHandler) VerifyPaymentAndActivate(c *fiber.Ctx) error {
+	return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
+		"success":      false,
+		"code":         "RTO_ENGINE_NOT_YET_AVAILABLE",
+		"message":      "The RTO Engine launches with the Growth tier. Join the waitlist to get early access.",
+		"waitlist_url": "/v1/waitlist/join",
+	})
+
 	merchantIDVal := c.Locals("kaughtman.merchant_id")
 	merchantID, ok := merchantIDVal.(string)
 	if !ok || merchantID == "" {
@@ -130,6 +139,13 @@ func (h *BillingHandler) VerifyModulePurchase(c *fiber.Ctx) error {
 // Route: POST /v1/billing/subscription/activate
 // Body: { "plan": "growth" | "growth_ads" }
 func (h *BillingHandler) ActivateSubscription(c *fiber.Ctx) error {
+	return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
+		"success":      false,
+		"code":         "TIER_NOT_YET_AVAILABLE",
+		"message":      "Growth and Growth+Ads tiers are coming soon. Join the waitlist at /v1/waitlist/join to get early access.",
+		"waitlist_url": "/v1/waitlist/join",
+	})
+
 	merchantIDVal := c.Locals("kaughtman.merchant_id")
 	merchantID, ok := merchantIDVal.(string)
 	if !ok || merchantID == "" {
@@ -178,6 +194,8 @@ func (h *BillingHandler) ActivateSubscription(c *fiber.Ctx) error {
 		return c.Status(500).JSON(fiber.Map{"success": false, "error": "failed to activate subscription"})
 	}
 
+	InvalidateMerchantCache(c.UserContext(), h.rdb, merchant.APIKeyHash)
+
 	slog.Info("subscription activated successfully", "merchant_id", merchantID, "plan", plan)
 	return c.JSON(fiber.Map{
 		"success":   true,
@@ -191,6 +209,13 @@ func (h *BillingHandler) ActivateSubscription(c *fiber.Ctx) error {
 // Route: POST /v1/billing/subscription/upgrade
 // Body: { "plan": "growth_ads" }
 func (h *BillingHandler) UpgradeSubscription(c *fiber.Ctx) error {
+	return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
+		"success":      false,
+		"code":         "TIER_NOT_YET_AVAILABLE",
+		"message":      "Growth and Growth+Ads tiers are coming soon. Join the waitlist at /v1/waitlist/join to get early access.",
+		"waitlist_url": "/v1/waitlist/join",
+	})
+
 	merchantIDVal := c.Locals("kaughtman.merchant_id")
 	merchantID, ok := merchantIDVal.(string)
 	if !ok || merchantID == "" {
@@ -231,6 +256,8 @@ func (h *BillingHandler) UpgradeSubscription(c *fiber.Ctx) error {
 		return c.Status(500).JSON(fiber.Map{"success": false, "error": "failed to upgrade subscription"})
 	}
 
+	InvalidateMerchantCache(c.UserContext(), h.rdb, merchant.APIKeyHash)
+
 	slog.Info("merchant upgraded subscription mid-cycle", "merchant_id", merchantID, "from", "growth", "to", "growth_ads", "timestamp", time.Now())
 	return c.JSON(fiber.Map{
 		"success": true,
@@ -268,6 +295,7 @@ func (h *BillingHandler) CancelSubscription(c *fiber.Ctx) error {
 		}
 
 		updates := map[string]interface{}{
+			"tier":                   domain.TierFree,
 			"subscription_renews_at": &renewsAt,
 			"has_paid_subscription":  false, // will downgrade to free on next invoice cycle
 		}
@@ -279,9 +307,20 @@ func (h *BillingHandler) CancelSubscription(c *fiber.Ctx) error {
 		return c.Status(500).JSON(fiber.Map{"success": false, "error": "failed to cancel subscription"})
 	}
 
+	InvalidateMerchantCache(c.UserContext(), h.rdb, merchant.APIKeyHash)
+
 	slog.Info("merchant cancelled subscription", "merchant_id", merchantID, "effective_at", renewsAt)
 	return c.JSON(fiber.Map{
 		"success": true,
 		"message": "Subscription cancelled successfully. Your features will remain active until " + renewsAt.Format("2006-01-02") + ".",
 	})
+}
+
+// InvalidateMerchantCache invalidates the merchant's cached auth credentials in Redis
+func InvalidateMerchantCache(ctx context.Context, rdb *redis.Client, apiKeyHash string) {
+	if apiKeyHash == "" {
+		return
+	}
+	cacheKey := "auth:apikey:" + apiKeyHash
+	rdb.Del(ctx, cacheKey)
 }
