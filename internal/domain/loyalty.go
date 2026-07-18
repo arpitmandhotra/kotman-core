@@ -56,9 +56,50 @@ type BuyerLoyaltyInsights struct {
 }
 
 type BuyerProfile struct {
-	ID                 uuid.UUID `gorm:"type:uuid;primaryKey" json:"id"`
-	PhoneNormalized    string    `gorm:"uniqueIndex;not null" json:"phone_normalized"`
-	NetworkTotalOrders int       `gorm:"not null;default:0" json:"network_total_orders"`
-	NetworkRTOCount    int       `gorm:"not null;default:0" json:"network_rto_count"`
-	LastUpdatedAt      time.Time `gorm:"not null" json:"last_updated_at"`
+	ID                         uuid.UUID  `gorm:"type:uuid;primaryKey" json:"id"`
+	PhoneNormalized            string     `gorm:"uniqueIndex;not null" json:"phone_normalized"`
+	NetworkTotalOrders         int        `gorm:"not null;default:0" json:"network_total_orders"`
+	NetworkRTOCount            int        `gorm:"not null;default:0" json:"network_rto_count"`
+	LastUpdatedAt              time.Time  `gorm:"not null" json:"last_updated_at"`
+
+	// LTV computation fields — populated by the buyer profile aggregation job
+	FirstNetworkOrderAt        *time.Time `gorm:"default:null" json:"first_network_order_at"`
+	LastNetworkOrderAt         *time.Time `gorm:"default:null" json:"last_network_order_at"`
+	NetworkTotalSpendINR       float64    `gorm:"type:numeric(14,2);default:0" json:"network_total_spend_inr"`
+	NetworkAvgOrderValueINR    float64    `gorm:"type:numeric(14,2);default:0" json:"network_avg_order_value_inr"`
+	NetworkOrderValueStdDevINR float64    `gorm:"type:numeric(14,2);default:0" json:"network_order_value_std_dev_inr"`
+}
+
+// MonthsSinceFirstNetworkOrder returns the number of months between
+// the buyer's first network order and now. Used for LTV projection.
+func (bp *BuyerProfile) MonthsSinceFirstNetworkOrder() float64 {
+	if bp.FirstNetworkOrderAt == nil || bp.FirstNetworkOrderAt.IsZero() {
+		return 0
+	}
+	return time.Since(*bp.FirstNetworkOrderAt).Hours() / (24 * 30)
+}
+
+// DaysSinceLastNetworkOrder returns the number of days since
+// the buyer's most recent order across the network.
+func (bp *BuyerProfile) DaysSinceLastNetworkOrder() int {
+	if bp.LastNetworkOrderAt == nil || bp.LastNetworkOrderAt.IsZero() {
+		return 999
+	}
+	return int(time.Since(*bp.LastNetworkOrderAt).Hours() / 24)
+}
+
+// OrderValueConsistencyScore returns a 0-1 score representing how
+// consistent this buyer's order values are across the network.
+// High consistency = more predictable LTV = higher confidence score.
+func (bp *BuyerProfile) OrderValueConsistencyScore() float64 {
+	if bp.NetworkOrderValueStdDevINR == 0 || bp.NetworkAvgOrderValueINR == 0 {
+		return 0.5 // neutral when we don't have std dev data
+	}
+	// Coefficient of variation: lower = more consistent
+	cv := bp.NetworkOrderValueStdDevINR / bp.NetworkAvgOrderValueINR
+	// Convert to 0-1 score where 1 = perfectly consistent
+	if cv >= 1.0 {
+		return 0.0
+	}
+	return 1.0 - cv
 }

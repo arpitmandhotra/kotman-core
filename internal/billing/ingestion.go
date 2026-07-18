@@ -18,6 +18,7 @@ import (
 	"github.com/arpitmandhotra/api-integrator/internal/database"
 	"github.com/arpitmandhotra/api-integrator/internal/domain"
 	"github.com/arpitmandhotra/api-integrator/internal/integrations/meta"
+	"github.com/arpitmandhotra/api-integrator/internal/service"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/redis/go-redis/v9"
@@ -689,11 +690,11 @@ func ProcessInboundOrder(ctx context.Context, platform string, merchantID string
 			return
 		}
 
-		var profile domain.TrustProfile
+		var trustProfile domain.TrustProfile
 		if err := DB.WithContext(capiCtx).
 			Where("phone_hash = ?", eventVal.PhoneHash).
-			First(&profile).Error; err != nil {
-			profile = domain.TrustProfile{
+			First(&trustProfile).Error; err != nil {
+			trustProfile = domain.TrustProfile{
 				TotalOrders:   0,
 				IsBlacklisted: false,
 			}
@@ -724,22 +725,22 @@ func ProcessInboundOrder(ctx context.Context, platform string, merchantID string
 			if weightedTotalOrders > 0 {
 				rtoRate := weightedRTOs / weightedTotalOrders
 				cancelRate := weightedCancellations / weightedTotalOrders
-				trustScore = 100.0 - (rtoRate * 60) - (cancelRate * 20) + profile.RiskAdjustment
+				trustScore = 100.0 - (rtoRate * 60) - (cancelRate * 20) + trustProfile.RiskAdjustment
 			} else {
 				trustScore = 85.0
 			}
 		} else {
-			if profile.TotalOrders > 0 {
-				rtoRate := float64(profile.TotalRTOs) / float64(profile.TotalOrders)
-				cancelRate := float64(profile.TotalCancellations) / float64(profile.TotalOrders)
+			if trustProfile.TotalOrders > 0 {
+				rtoRate := float64(trustProfile.TotalRTOs) / float64(trustProfile.TotalOrders)
+				cancelRate := float64(trustProfile.TotalCancellations) / float64(trustProfile.TotalOrders)
 				trustScore -= rtoRate * 60
 				trustScore -= cancelRate * 20
-				trustScore += profile.RiskAdjustment
+				trustScore += trustProfile.RiskAdjustment
 			} else {
 				trustScore = 85
 			}
 		}
-		if profile.IsBlacklisted {
+		if trustProfile.IsBlacklisted {
 			trustScore = 5
 		}
 		if trustScore < 0 {
@@ -747,6 +748,11 @@ func ProcessInboundOrder(ctx context.Context, platform string, merchantID string
 		}
 		if trustScore > 100 {
 			trustScore = 100
+		}
+
+		// Gate: skip at-risk buyers before any further work
+		if trustProfile.IsBlacklisted || int(trustScore) < 40 {
+			return
 		}
 
 		var cred domain.PlatformCredential
@@ -768,24 +774,62 @@ func ProcessInboundOrder(ctx context.Context, platform string, merchantID string
 			return
 		}
 
+		// Compute predicted LTV — this is the ONLY source of value sent to Meta
+		rawValueINR := float64(eventVal.OrderValuePaise) / 100.0
+		ltvSvc := service.NewLTVService(DB)
+		ltvSignal, ltvErr := ltvSvc.ComputePredictedLTV(capiCtx, eventVal.PhoneHash, rawValueINR)
+		if ltvErr != nil {
+			slog.Error("ingestion: ltv computation failed, falling back to raw value",
+				"buyer_phone_hash", eventVal.PhoneHash,
+				"error", ltvErr,
+			)
+			ltvSignal = &domain.PredictedLTVSignal{
+				RawTransactionValueINR: rawValueINR,
+				FallbackReason:         "computation_error",
+			}
+		}
+
 		capiClient := meta.NewCAPIClient()
-		_ = capiClient.SendPurchaseEvent(capiCtx, meta.CAPIEventInput{
-			MerchantID:      eventVal.MerchantID,
-			PixelID:         settings.MetaPixelID,
-			AccessToken:     decryptedToken,
-			TestEventCode:   settings.MetaTestEventCode,
-			OrderID:         eventVal.OrderID,
-			RawPhone:        rawPhoneVal,
-			Email:           emailVal,
-			CityName:        cityNameVal,
-			OrderValuePaise: eventVal.OrderValuePaise,
-			CategoryL1:      eventVal.CategoryL1,
-			EventTimestamp:  eventTimestamp,
-			ShopDomain:      shopDomain,
-			TrustScore:      int(trustScore),
-			TotalOrders:     profile.TotalOrders,
-			IsBlacklisted:   profile.IsBlacklisted,
+		metaEventID, metaResponseCode, _ := capiClient.SendPurchaseEvent(capiCtx, meta.CAPIEventInput{
+			MerchantID:     eventVal.MerchantID,
+			PixelID:        settings.MetaPixelID,
+			AccessToken:    decryptedToken,
+			TestEventCode:  settings.MetaTestEventCode,
+			OrderID:        eventVal.OrderID,
+			RawPhone:       rawPhoneVal,
+			Email:          emailVal,
+			CityName:       cityNameVal,
+			CategoryL1:     eventVal.CategoryL1,
+			EventTimestamp: eventTimestamp,
+			ShopDomain:     shopDomain,
+			TrustScore:     int(trustScore),
+			IsBlacklisted:  trustProfile.IsBlacklisted,
+			LTVSignal:      ltvSignal,
 		})
+
+		// Resolve the final value and method that was sent
+		sentValueINR, predictionMethod := ltvSignal.MetaCAPIValue()
+
+		// Write immutable audit log — every CAPI dispatch is recorded
+		auditLog := domain.CAPIEventLog{
+			MerchantID:        eventVal.MerchantID,
+			OrderID:           eventVal.OrderID,
+			BuyerPhoneHash:    meta.HashPhoneForMeta(rawPhoneVal),
+			SentValueINR:      sentValueINR,
+			RawTransactionINR: rawValueINR,
+			PredictionMethod:  predictionMethod,
+			ConfidenceScore:   ltvSignal.ConfidenceScore,
+			NetworkOrderCount: ltvSignal.NetworkOrderCount,
+			MetaEventID:       metaEventID,
+			MetaResponseCode:  metaResponseCode,
+			SentAt:            time.Now(),
+		}
+		if dbErr := DB.WithContext(capiCtx).Create(&auditLog).Error; dbErr != nil {
+			slog.Warn("ingestion: failed to write CAPIEventLog audit record",
+				"order_id", eventVal.OrderID,
+				"error", dbErr,
+			)
+		}
 	}(rawPhone, email, cityName, event)
 
 	return nil

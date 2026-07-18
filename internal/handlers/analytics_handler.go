@@ -192,6 +192,61 @@ func (h *AnalyticsHandler) GetMerchantInsights(c *fiber.Ctx) error {
 		AllFeaturesUnlocked: domain.IsFoundingPeriodActive(),
 	}
 
+	// =====================================================================
+	// SECTION E — CAPI LTV COVERAGE STATS
+	// Computed from CAPIEventLog for the current calendar month.
+	// Only populated when CAPI is enabled (TierGrowthAds + pixel configured).
+	// =====================================================================
+	var capiCoverage domain.CAPILTVCoverage
+	if capiEnabled {
+		monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
+		type capiCoverageRow struct {
+			PredictionMethod string
+			EventCount       int
+			AvgSentValue     float64
+			AvgRawValue      float64
+		}
+		var coverageRows []capiCoverageRow
+		h.pg.WithContext(ctx).Raw(`
+			SELECT
+				CASE WHEN prediction_method LIKE 'network_history%' THEN 'ltv' ELSE 'raw' END AS prediction_method,
+				COUNT(*) AS event_count,
+				AVG(sent_value_inr) AS avg_sent_value,
+				AVG(raw_transaction_inr) AS avg_raw_value
+			FROM capi_event_logs
+			WHERE merchant_id = ? AND sent_at >= ?
+			GROUP BY 1
+		`, merchantID, monthStart).Scan(&coverageRows)
+
+		for _, r := range coverageRows {
+			if r.PredictionMethod == "ltv" {
+				capiCoverage.LTVBuyerCount = r.EventCount
+			} else {
+				capiCoverage.RawBuyerCount = r.EventCount
+			}
+			capiCoverage.EventsSentMonth += r.EventCount
+		}
+		total := capiCoverage.LTVBuyerCount + capiCoverage.RawBuyerCount
+		if total > 0 {
+			capiCoverage.LTVCoveragePct = float64(capiCoverage.LTVBuyerCount) / float64(total) * 100.0
+		}
+
+		// Avg multiplier = avg sent value / avg raw value across all LTV events
+		type multiplierRow struct {
+			AvgSentValue float64
+			AvgRawValue  float64
+		}
+		var mRow multiplierRow
+		h.pg.WithContext(ctx).Raw(`
+			SELECT AVG(sent_value_inr) AS avg_sent_value, AVG(raw_transaction_inr) AS avg_raw_value
+			FROM capi_event_logs
+			WHERE merchant_id = ? AND sent_at >= ? AND prediction_method LIKE 'network_history%'
+		`, merchantID, monthStart).Scan(&mRow)
+		if mRow.AvgRawValue > 0 {
+			capiCoverage.AvgLTVMultiplier = mRow.AvgSentValue / mRow.AvgRawValue
+		}
+	}
+
 	resp := domain.InsightsResponse{
 		ExecutionMode:            executionMode,
 		TotalOrdersAnalyzed:      int(totalOrdersAnalyzed),
@@ -220,6 +275,7 @@ func (h *AnalyticsHandler) GetMerchantInsights(c *fiber.Ctx) error {
 		CrossNetwork:             crossNetwork,
 		CrossNetworkPaywalled:    crossNetworkPaywalled,
 		RTOEngine:                rtoEngine,
+		CAPILTVCoverage:          capiCoverage,
 		Backfill: domain.BackfillStats{
 			Status:      statusStr,
 			OrderCount:  merchant.BackfillOrderCount,
