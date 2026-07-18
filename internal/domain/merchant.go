@@ -289,6 +289,13 @@ type InsightsResponse struct {
     RTOEngine RTOEngineAnalytics `json:"rto_engine"`
 
     // =========================================================
+    // SECTION E — META CAPI LTV SIGNAL COVERAGE
+    // Only populated when CapiEnabled = true (TierGrowthAds + CAPI configured).
+    // Shows how much of the merchant's buyer base has LTV predictions vs raw fallback.
+    // =========================================================
+    CAPILTVCoverage CAPILTVCoverage `json:"capi_ltv_coverage"`
+
+    // =========================================================
     // SECTION D — HISTORICAL BACKFILL STATUS
     // =========================================================
     Backfill BackfillStats `json:"backfill"`

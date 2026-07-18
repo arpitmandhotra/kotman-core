@@ -182,9 +182,53 @@ func main() {
 		log.Fatalf("❌ Failed to migrate ScoreComponent: %v", err)
 	}
 
-	log.Println("📦 Syncing domain.BuyerProfile schema...")
+	log.Println("📦 Syncing domain.BuyerProfile schema (including LTV fields)...")
 	if err := db.AutoMigrate(&domain.BuyerProfile{}); err != nil {
 		log.Fatalf("❌ Failed to migrate BuyerProfile: %v", err)
+	}
+
+	log.Println("📦 Running raw migration to configure BuyerProfile LTV columns...")
+	alterBuyerProfileSQL := `
+		ALTER TABLE buyer_profiles ADD COLUMN IF NOT EXISTS first_network_order_at TIMESTAMP WITH TIME ZONE;
+		ALTER TABLE buyer_profiles ADD COLUMN IF NOT EXISTS last_network_order_at TIMESTAMP WITH TIME ZONE;
+		ALTER TABLE buyer_profiles ADD COLUMN IF NOT EXISTS network_total_spend_inr NUMERIC(14,2) NOT NULL DEFAULT 0;
+		ALTER TABLE buyer_profiles ADD COLUMN IF NOT EXISTS network_avg_order_value_inr NUMERIC(14,2) NOT NULL DEFAULT 0;
+		ALTER TABLE buyer_profiles ADD COLUMN IF NOT EXISTS network_order_value_std_dev_inr NUMERIC(14,2) NOT NULL DEFAULT 0;
+	`
+	if err := db.Exec(alterBuyerProfileSQL).Error; err != nil {
+		log.Fatalf("❌ Failed to migrate BuyerProfile LTV columns: %v", err)
+	}
+
+	log.Println("📦 Backfilling BuyerProfile LTV fields from existing order data...")
+	backfillBuyerProfileSQL := `
+		UPDATE buyer_profiles bp
+		SET
+			first_network_order_at     = sub.first_order_at,
+			last_network_order_at      = sub.last_order_at,
+			network_total_spend_inr    = sub.total_spend_inr,
+			network_avg_order_value_inr = sub.avg_spend_inr
+		FROM (
+			SELECT
+				buyer_phone_normalized,
+				MIN(created_at)                       AS first_order_at,
+				MAX(created_at)                       AS last_order_at,
+				SUM(order_value_paise) / 100.0        AS total_spend_inr,
+				AVG(order_value_paise) / 100.0        AS avg_spend_inr
+			FROM orders
+			WHERE buyer_phone_normalized != ''
+			  AND order_value_paise > 0
+			GROUP BY buyer_phone_normalized
+		) sub
+		WHERE bp.phone_normalized = sub.buyer_phone_normalized
+		  AND bp.first_network_order_at IS NULL;
+	`
+	if err := db.Exec(backfillBuyerProfileSQL).Error; err != nil {
+		log.Printf("⚠️  BuyerProfile LTV backfill had errors (non-fatal, may rerun): %v", err)
+	}
+
+	log.Println("📦 Syncing domain.CAPIEventLog schema (CAPI audit trail)...")
+	if err := db.AutoMigrate(&domain.CAPIEventLog{}); err != nil {
+		log.Fatalf("❌ Failed to migrate CAPIEventLog: %v", err)
 	}
 
 	log.Println("📦 Syncing domain.ShopifyBulkOperation schema...")
