@@ -33,7 +33,7 @@ func CalculateFee(cartValue float64) float64 {
 	case cartValue <= 500:
 		return 5.00
 	case cartValue <= 1000:
-		return 7.50
+		return 10.00
 	case cartValue <= 2000:
 		return 10.00
 	case cartValue <= 3000:
