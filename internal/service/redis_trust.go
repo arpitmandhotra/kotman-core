@@ -74,9 +74,9 @@ func (s *RedisTrustService) EvaluateRisk(ctx context.Context, phoneHash string, 
 			"attempts", attempts,
 		)
 		return domain.TrustResponse{
-			PhoneHash: phoneHash,
-			Score:     10,
-			Action:    "HIDE_COD",
+			PhoneHash:       phoneHash,
+			BuyerTrustIndex: 10,
+			Action:          "HIDE_COD",
 		}, nil
 	}
 
@@ -94,9 +94,9 @@ func (s *RedisTrustService) EvaluateRisk(ctx context.Context, phoneHash string, 
 		)
 		parsedScore, _ := strconv.Atoi(val)
 		return domain.TrustResponse{
-			PhoneHash: phoneHash,
-			Score:     parsedScore,
-			Action:    "HIDE_COD",
+			PhoneHash:       phoneHash,
+			BuyerTrustIndex: parsedScore,
+			Action:          "HIDE_COD",
 		}, nil
 	}
 
@@ -217,9 +217,9 @@ func (s *RedisTrustService) EvaluateRisk(ctx context.Context, phoneHash string, 
 	}
 
 	return domain.TrustResponse{
-		PhoneHash: phoneHash,
-		Score:     finalScore,
-		Action:    action,
+		PhoneHash:       phoneHash,
+		BuyerTrustIndex: finalScore,
+		Action:          action,
 	}, nil
 
 }

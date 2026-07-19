@@ -16,9 +16,9 @@ type TrustRequest struct {
 
 // TrustResponse is the blueprint for the JSON we send back.
 type TrustResponse struct {
-	PhoneHash string `json:"phone_hash"`
-	Score     int    `json:"score"`
-	Action    string `json:"action"`
+	PhoneHash       string `json:"phone_hash"`
+	BuyerTrustIndex int    `json:"buyer_trust_index"`
+	Action          string `json:"action"`
 
 	// --- Dynamic Risk Pricing ---
 	// NOTE: These fields are V1.1 (Populated by the Python AI Scorer). 

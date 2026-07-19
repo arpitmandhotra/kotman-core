@@ -5,8 +5,11 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"strings"
 	"time"
 
+	"github.com/arpitmandhotra/api-integrator/internal/ai"
+	"github.com/arpitmandhotra/api-integrator/internal/analytics"
 	"github.com/arpitmandhotra/api-integrator/internal/domain"
 	"gorm.io/gorm"
 )
@@ -674,3 +677,133 @@ func (s *ScoreService) saveScore(
 		return nil
 	})
 }
+
+// BuildAIPayloads constructs AI payloads for all active merchants
+func (s *ScoreService) BuildAIPayloads(ctx context.Context) []ai.AIScorePayload {
+	var merchants []domain.Merchant
+	if err := s.pg.WithContext(ctx).Find(&merchants).Error; err != nil {
+		slog.Error("failed fetching merchants for AI payloads", "error", err)
+		return nil
+	}
+
+	var payloads []ai.AIScorePayload
+	for _, m := range merchants {
+		var geoStats []struct {
+			GeoTier string
+			Count   int
+		}
+		s.pg.WithContext(ctx).Raw(`
+			SELECT geo_tier, COUNT(*) as count
+			FROM billable_events
+			WHERE merchant_id = ? AND geo_tier != ''
+			GROUP BY geo_tier
+		`, m.ID).Scan(&geoStats)
+
+		var totalGeo int
+		for _, stat := range geoStats {
+			totalGeo += stat.Count
+		}
+		geoMixParts := []string{}
+		for _, stat := range geoStats {
+			if totalGeo > 0 {
+				pct := float64(stat.Count) / float64(totalGeo) * 100
+				geoMixParts = append(geoMixParts, fmt.Sprintf("%.0f%% %s", pct, stat.GeoTier))
+			}
+		}
+		geoTierMix := strings.Join(geoMixParts, ", ")
+
+		var totalOrders int64
+		s.pg.WithContext(ctx).Model(&domain.BillableEvent{}).Where("merchant_id = ?", m.ID).Count(&totalOrders)
+		var codOrders int64
+		s.pg.WithContext(ctx).Model(&domain.BillableEvent{}).Where("merchant_id = ? AND payment_method = 'cod'", m.ID).Count(&codOrders)
+		codShareRate := 0.0
+		if totalOrders > 0 {
+			codShareRate = float64(codOrders) / float64(totalOrders)
+		}
+
+		var avgBTI float64
+		s.pg.WithContext(ctx).Raw(`
+			SELECT COALESCE(AVG(predicted_risk_score), 85.0) FROM order_audits WHERE merchant_id = ? AND predicted_risk_score > 0
+		`, m.ID).Scan(&avgBTI)
+
+		var totalOrdersAnalysed int64
+		s.pg.WithContext(ctx).Model(&domain.OrderAudit{}).Where("merchant_id = ?", m.ID).Count(&totalOrdersAnalysed)
+
+		var merchantAvgCart float64
+		s.pg.WithContext(ctx).Raw(`
+			SELECT COALESCE(AVG(order_value_paise) / 100.0, 0.0) FROM billable_events WHERE merchant_id = ? AND order_value_paise > 0
+		`, m.ID).Scan(&merchantAvgCart)
+
+		var networkCarts []float64
+		s.pg.WithContext(ctx).Raw(`
+			SELECT AVG(order_value_paise) / 100.0 AS avg_cart FROM billable_events WHERE order_value_paise > 0 GROUP BY phone_hash
+		`).Scan(&networkCarts)
+
+		networkPercentile := analytics.ComputeSpendingPercentile(merchantAvgCart, networkCarts)
+
+		currentScores := make(map[domain.ScoreType]*domain.MerchantScore)
+		previousScores := make(map[domain.ScoreType]*domain.MerchantScore)
+
+		for _, st := range []domain.ScoreType{domain.ScoreOperations, domain.ScoreRTOEfficiency, domain.ScoreBuyerQuality} {
+			var mScores []domain.MerchantScore
+			if err := s.pg.WithContext(ctx).
+				Preload("Breakdown").
+				Where("merchant_id = ? AND score_type = ?", m.ID, st).
+				Order("computed_at DESC").
+				Limit(2).
+				Find(&mScores).Error; err == nil {
+				if len(mScores) > 0 {
+					currentScores[st] = &mScores[0]
+				}
+				if len(mScores) > 1 {
+					previousScores[st] = &mScores[1]
+				}
+			}
+		}
+
+		payload := ai.BuildAIPayload(&m, currentScores, previousScores, ai.MerchantContext{
+			DomainCategory:      m.Vertical,
+			GeoTierMix:          geoTierMix,
+			CODShareRate:        codShareRate,
+			AvgBuyerTrustIndex:  avgBTI,
+			TotalOrdersAnalysed: int(totalOrdersAnalysed),
+			NetworkPercentile:   networkPercentile,
+		})
+
+		payloads = append(payloads, payload)
+	}
+
+	return payloads
+}
+
+// SaveAIInsights stores the generated AI insights in the database
+func (s *ScoreService) SaveAIInsights(ctx context.Context, merchantID string, insights map[domain.ScoreType]string) {
+	for st, insight := range insights {
+		if insight == "" {
+			continue
+		}
+
+		var currentScoreVal int
+		var currentScore domain.MerchantScore
+		if err := s.pg.WithContext(ctx).
+			Where("merchant_id = ? AND score_type = ?", merchantID, st).
+			Order("computed_at DESC").
+			First(&currentScore).Error; err == nil {
+			currentScoreVal = currentScore.Score
+		}
+
+		aiInsight := domain.AIScoreInsight{
+			MerchantID:  merchantID,
+			ScoreType:   st,
+			ScoreValue:  currentScoreVal,
+			Insight:     insight,
+			GeneratedAt: time.Now(),
+			ModelUsed:   "deterministic_rules",
+		}
+
+		if err := s.pg.WithContext(ctx).Create(&aiInsight).Error; err != nil {
+			slog.Error("failed to save AI insight", "merchant_id", merchantID, "score_type", st, "error", err)
+		}
+	}
+}
+
