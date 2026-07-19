@@ -798,7 +798,7 @@ func (s *ScoreService) SaveAIInsights(ctx context.Context, merchantID string, in
 			ScoreValue:  currentScoreVal,
 			Insight:     insight,
 			GeneratedAt: time.Now(),
-			ModelUsed:   "claude-3-5-sonnet-20241022",
+			ModelUsed:   "deterministic_rules",
 		}
 
 		if err := s.pg.WithContext(ctx).Create(&aiInsight).Error; err != nil {

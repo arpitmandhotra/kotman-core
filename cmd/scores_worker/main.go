@@ -16,12 +16,6 @@ func main() {
 	slog.SetDefault(logger)
 	slog.Info("starting scheduled merchant scores computation worker")
 
-	// Startup validation of ANTHROPIC_API_KEY
-	apiKey := os.Getenv("ANTHROPIC_API_KEY")
-	if apiKey == "" {
-		slog.Warn("ANTHROPIC_API_KEY is not set. AI pipeline will degrade gracefully (AI insights will not be generated).")
-	}
-
 	pg := database.NewPostgresClient()
 
 	scoreSvc := service.NewScoreService(pg)
@@ -36,18 +30,16 @@ func main() {
 	}
 
 	// After score computation, send to AI pipeline for insight generation
-	if apiKey != "" {
-		aiPayloads := scoreSvc.BuildAIPayloads(ctx)
-		for _, payload := range aiPayloads {
-			merchantCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-			insights, err := ai.SendToAI(merchantCtx, payload)
-			cancel()
-			if err != nil {
-				slog.Error("AI pipeline failed for merchant", "merchant_id", payload.MerchantID, "error", err)
-				continue
-			}
-			scoreSvc.SaveAIInsights(ctx, payload.MerchantID, insights)
+	aiPayloads := scoreSvc.BuildAIPayloads(ctx)
+	for _, payload := range aiPayloads {
+		merchantCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		insights, err := ai.SendToAI(merchantCtx, payload)
+		cancel()
+		if err != nil {
+			slog.Error("AI pipeline failed for merchant", "merchant_id", payload.MerchantID, "error", err)
+			continue
 		}
+		scoreSvc.SaveAIInsights(ctx, payload.MerchantID, insights)
 	}
 
 	slog.Info("merchant scores computation completed successfully")

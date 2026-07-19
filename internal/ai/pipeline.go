@@ -1,14 +1,7 @@
 package ai
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
-	"fmt"
-	"io"
-	"log/slog"
-	"net/http"
-	"os"
 	"time"
 
 	"github.com/arpitmandhotra/api-integrator/internal/analytics"
@@ -86,8 +79,6 @@ func BuildAIPayload(
 			}
 		}
 
-		// Build the AI-specific prompt for this score
-		input.AIPrompt = buildScorePrompt(scoreType, input, ctxCtx)
 		return input
 	}
 
@@ -101,56 +92,19 @@ func BuildAIPayload(
 	}
 }
 
-func buildScorePrompt(scoreType domain.ScoreType, input AIScoreInput, ctxCtx MerchantContext) string {
-	badComponents := []string{}
-	for _, c := range input.Components {
-		if c.Direction == analytics.DirectionBad {
-			badComponents = append(badComponents, fmt.Sprintf("%s (score: %d/100): %s", c.Name, c.Normalised, c.Description))
-		}
-	}
-
-	switch scoreType {
-	case domain.ScoreOperations:
-		return fmt.Sprintf(
-			`Operations Score is %d/100 (trend: %s) for a %s merchant with %.0f%% COD share.
-Bad signals: %v
-Context: %s geo mix, avg buyer trust index %.1f.
-Task: In 2 sentences, what is the single most impactful operational change this merchant should make this week? Be specific. Reference the actual numbers.`,
-			input.CurrentValue, input.Trend, ctxCtx.DomainCategory, ctxCtx.CODShareRate*100,
-			badComponents, ctxCtx.GeoTierMix, ctxCtx.AvgBuyerTrustIndex,
-		)
-
-	case domain.ScoreRTOEfficiency:
-		return fmt.Sprintf(
-			`RTO Efficiency Score is %d/100 (trend: %s) for a %s merchant.
-Bad signals: %v
-Context: %s geo mix, COD share %.0f%%, network percentile %d.
-Task: In 2 sentences, what is the single most impactful action to improve RTO efficiency? Be specific about which pincode, category, or buyer segment to address first.`,
-			input.CurrentValue, input.Trend, ctxCtx.DomainCategory,
-			badComponents, ctxCtx.GeoTierMix, ctxCtx.CODShareRate*100, ctxCtx.NetworkPercentile,
-		)
-
-	case domain.ScoreBuyerQuality:
-		return fmt.Sprintf(
-			`Buyer Quality Score is %d/100 (trend: %s).
-Bad signals: %v
-Context: %d total orders analysed, network percentile %d.
-Task: In 2 sentences, what is the single most impactful action to improve buyer quality? Be specific about which segment to target.`,
-			input.CurrentValue, input.Trend,
-			badComponents, ctxCtx.TotalOrdersAnalysed, ctxCtx.NetworkPercentile,
-		)
-	}
-	return ""
-}
-
-// SendToAI sends the payload to the AI model and returns its response.
+// SendToAI generates deterministic insights for each score type in the payload.
 func SendToAI(ctx context.Context, payload AIScorePayload) (map[domain.ScoreType]string, error) {
-	apiKey := os.Getenv("ANTHROPIC_API_KEY")
-	if apiKey == "" {
-		return nil, fmt.Errorf("ANTHROPIC_API_KEY not set")
+	results := make(map[domain.ScoreType]string)
+
+	merchantData := map[string]interface{}{
+		"dominant_category":     payload.MerchantContext.DomainCategory,
+		"geo_tier_mix":          payload.MerchantContext.GeoTierMix,
+		"cod_share_rate":        payload.MerchantContext.CODShareRate,
+		"avg_buyer_trust_index": payload.MerchantContext.AvgBuyerTrustIndex,
+		"total_orders_analysed": payload.MerchantContext.TotalOrdersAnalysed,
+		"network_percentile":    payload.MerchantContext.NetworkPercentile,
 	}
 
-	results := make(map[domain.ScoreType]string)
 	scoreInputs := map[domain.ScoreType]AIScoreInput{
 		domain.ScoreOperations:    payload.OperationsScore,
 		domain.ScoreRTOEfficiency: payload.RTOEfficiencyScore,
@@ -158,89 +112,91 @@ func SendToAI(ctx context.Context, payload AIScorePayload) (map[domain.ScoreType
 	}
 
 	for scoreType, input := range scoreInputs {
-		if input.CurrentValue == 0 || input.AIPrompt == "" {
-			continue // skip if score not yet computed
+		if input.CurrentValue == 0 {
+			continue // skip if score not computed
 		}
 
-		requestBody := map[string]interface{}{
-			"model":      "claude-3-5-sonnet-20241022",
-			"max_tokens": 200,
-			"messages": []map[string]interface{}{
-				{
-					"role":    "user",
-					"content": input.AIPrompt,
-				},
-			},
-			"system": `You are a senior D2C operations consultant analysing Indian e-commerce merchant data. 
-You give precise, actionable recommendations grounded in specific numbers. 
-Never use generic advice. Always reference the actual metrics provided. 
-Respond in exactly 2 sentences. No preamble. No "I recommend" or "You should". Start directly with the action.`,
+		var typeStr string
+		switch scoreType {
+		case domain.ScoreOperations:
+			typeStr = "operations"
+		case domain.ScoreRTOEfficiency:
+			typeStr = "rto_efficiency"
+		case domain.ScoreBuyerQuality:
+			typeStr = "buyer_quality"
+		default:
+			typeStr = "unknown"
 		}
 
-		bodyBytes, err := json.Marshal(requestBody)
-		if err != nil {
-			slog.Error("failed to marshal AI request", "score_type", scoreType, "error", err)
-			continue
-		}
-
-		resp, err := makeAnthropicRequest(ctx, apiKey, bodyBytes)
-		if err != nil {
-			slog.Error("AI API call failed", "score_type", scoreType, "error", err)
-			continue
-		}
-
-		results[scoreType] = resp
+		insight := GenerateDeterministicInsight(typeStr, float64(input.CurrentValue), merchantData)
+		results[scoreType] = insight
 	}
 
 	return results, nil
 }
 
-func makeAnthropicRequest(ctx context.Context, apiKey string, body []byte) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, "POST", "https://api.anthropic.com/v1/messages", bytes.NewReader(body))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("x-api-key", apiKey)
-	req.Header.Set("anthropic-version", "2023-06-01")
-	req.Header.Set("Content-Type", "application/json")
+// GenerateDeterministicInsight produces rule-based 2-sentence
+// insights without any external API call. This is the current
+// production implementation.
+//
+// REPLACEMENT POINT: When the AI model is ready, replace
+// this function's body with a call to the trained model's
+// inference endpoint. The function signature must remain
+// identical — scoreType, score float64, and merchantData
+// map[string]interface{} in, string out. The caller and
+// database write are unchanged.
+//
+// The trained model should receive the same merchantData map
+// as its feature input and return a single string of two
+// sentences. No other changes to the pipeline are needed.
+func GenerateDeterministicInsight(
+	scoreType string,
+	score float64,
+	merchantData map[string]interface{},
+) string {
+	switch scoreType {
+	case "rto_efficiency":
+		if score < 40 {
+			return "Your RTO rate is critically high — prioritise immediately disabling COD for your top 3 highest-RTO pincodes, which account for the majority of your return losses. Run a prepaid-only campaign for your next flash sale to build a cleaner buyer cohort before re-enabling COD."
+		}
+		if score >= 40 && score < 65 {
+			return "Your RTO rate is above the network average — the fastest lever is applying COD restrictions specifically to first-time buyers in Tier 3 pincodes ordering above your average cart value. Buyers with 2+ fulfilled orders should remain unrestricted to avoid suppressing your loyal COD customers."
+		}
+		if score >= 65 && score < 80 {
+			return "Your RTO efficiency is improving but 20-30% of your COD losses are likely concentrated in one or two product categories — check your pincode health table for the categories with fulfillment rate below 70%. Consider a partial prepaid nudge (5% discount) specifically on those SKUs rather than a blanket COD policy change."
+		}
+		if score >= 80 {
+			return "Your RTO efficiency is strong relative to network benchmarks — focus on sustaining it by monitoring your new buyer cohort's first-order fulfillment rate weekly. If new buyer volume spikes (sale events, influencer drops), temporarily tighten COD thresholds for first-time Tier 3 buyers to protect your score."
+		}
 
-	client := &http.Client{
-		Timeout: 10 * time.Second,
+	case "buyer_quality":
+		if score < 40 {
+			return "Your buyer base skews heavily toward at-risk and casual segments — your most urgent action is identifying your ghost buyers (single purchase, 30+ days silent) and running a win-back sequence with a time-limited incentive. Do not run broad discount campaigns until you have separated your high-trust repeat buyers from your one-time COD cohort."
+		}
+		if score >= 40 && score < 65 {
+			return "Your buyer quality is moderate — the highest-impact move is identifying your prepaid conversion candidates (3+ fulfilled COD orders, never prepaid) and offering them a 5% prepaid-exclusive discount on their next order. Converting even 20% of this cohort to prepaid reduces your COD exposure without losing loyal buyers."
+		}
+		if score >= 65 && score < 80 {
+			return "Your buyer quality is healthy but your VIP segment is likely underdeveloped — check what percentage of your repeat buyers have placed 4+ orders versus 2-3 orders. A loyalty tier that unlocks early access or free shipping at the 4th order is the most cost-effective way to pull casual buyers into the trusted segment."
+		}
+		if score >= 80 {
+			return "Your buyer quality is among the strongest in your category network — protect this by ensuring your win-back sequences fire within your store's optimal reorder window (check your order velocity metric) rather than at a generic 7 or 14-day interval. Mis-timed re-engagement is the most common reason high-quality buyer cohorts degrade over 6-12 months."
+		}
+
+	case "operations":
+		if score < 40 {
+			return "Your operations score reflects significant gaps in fulfillment consistency — audit your top 5 COD pincodes for fulfillment rate and identify whether the issue is courier performance, address quality, or product-level defects driving returns. Fixing one root cause systematically will move your score faster than incremental improvements across many fronts."
+		}
+		if score >= 40 && score < 65 {
+			return "Your operational efficiency is below network median — the fastest improvement typically comes from standardising your NDR (non-delivery report) callback process so failed deliveries are re-attempted within 24 hours rather than queued. Check whether your current courier's NDR-to-reattempt window is causing buyers to cancel before the second attempt."
+		}
+		if score >= 65 && score < 80 {
+			return "Your operations are functioning well but your complaint category distribution likely shows SIZE_MISMATCH or NOT_AS_DESCRIBED as your top return driver — these are product listing problems, not logistics problems. Updating your size guide and product images for your top 3 return-generating SKUs will improve your score without any logistics change."
+		}
+		if score >= 80 {
+			return "Your operations score is strong — the main risk at this level is degradation during high-volume events (sales, festivals) when courier SLAs slip and NDR rates spike. Pre-negotiate priority fulfilment SLAs with your primary courier before your next major sale event to protect your score during peak periods."
+		}
 	}
 
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer func() {
-		io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
-		resp.Body.Close()
-	}()
-
-	if resp.StatusCode >= 400 {
-		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return "", fmt.Errorf("anthropic api returned error status %d: %s", resp.StatusCode, string(respBody))
-	}
-
-	var result struct {
-		Content []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"content"`
-	}
-
-	respBytes, err := io.ReadAll(io.LimitReader(resp.Body, 65536))
-	if err != nil {
-		return "", err
-	}
-
-	if err := json.Unmarshal(respBytes, &result); err != nil {
-		return "", err
-	}
-
-	if len(result.Content) == 0 {
-		return "", fmt.Errorf("no content in response")
-	}
-
-	return result.Content[0].Text, nil
+	return "Review your score breakdown to identify the specific metric with the largest gap from network benchmarks — that metric represents your highest-leverage operational improvement. Focus one operational change per 30-day cycle to measure impact cleanly before layering additional changes."
 }
