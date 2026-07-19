@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/arpitmandhotra/api-integrator/internal/domain"
+	"github.com/arpitmandhotra/api-integrator/internal/analytics"
 	"github.com/gofiber/fiber/v2"
 	redis "github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
@@ -338,9 +339,7 @@ func (h *AnalyticsHandler) computeOwnStoreAnalytics(ctx context.Context, merchan
 		Where("merchant_id = ? AND payment_method = 'cod' AND created_at >= ?", merchantID, thirtyDaysAgo).
 		Count(&cod30)
 	result.CODOrdersLast30Days = int(cod30)
-	if total30 > 0 {
-		result.CODShareRate = float64(cod30) / float64(total30)
-	}
+	result.CODShareRate = analytics.ComputeCODShareRate(int(cod30), int(total30)) / 100
 
 	// --- Cart value distribution from OrderAudit ---
 	// Extract order_value_paise from BillableEvent (more reliable than parsing RawPayload)
@@ -355,20 +354,18 @@ func (h *AnalyticsHandler) computeOwnStoreAnalytics(ctx context.Context, merchan
 		Scan(&cartRows)
 
 	if len(cartRows) >= 1 {
-		values := make([]float64, len(cartRows))
-		var sum float64
+		paiseValues := make([]int64, len(cartRows))
+		var totalValuePaise int64
 		for i, r := range cartRows {
-			v := float64(r.OrderValuePaise) / 100.0
-			values[i] = v
-			sum += v
+			paiseValues[i] = int64(r.OrderValuePaise)
+			totalValuePaise += int64(r.OrderValuePaise)
 		}
-		sort.Float64s(values)
-		n := len(values)
-		result.AvgCartValueINR = sum / float64(n)
-		result.MedianCartValueINR = percentileFromSorted(values, 50)
-		result.CartValueP25INR = percentileFromSorted(values, 25)
-		result.CartValueP75INR = percentileFromSorted(values, 75)
-		result.CartValueP90INR = percentileFromSorted(values, 90)
+		sort.Slice(paiseValues, func(i, j int) bool { return paiseValues[i] < paiseValues[j] })
+		result.AvgCartValueINR = analytics.ComputeAvgCartValueINR(totalValuePaise, len(cartRows))
+		result.MedianCartValueINR = analytics.ComputePercentileINR(paiseValues, 50)
+		result.CartValueP25INR = analytics.ComputePercentileINR(paiseValues, 25)
+		result.CartValueP75INR = analytics.ComputePercentileINR(paiseValues, 75)
+		result.CartValueP90INR = analytics.ComputePercentileINR(paiseValues, 90)
 	}
 
 	// --- RTO rate from TrustProfile rows seen at this merchant ---
@@ -390,10 +387,8 @@ func (h *AnalyticsHandler) computeOwnStoreAnalytics(ctx context.Context, merchan
 	`, merchantID).Scan(&rtoResult)
 
 	result.ObservedRTOCount = rtoResult.TotalRTOs
-	if rtoResult.TotalOrders > 0 {
-		result.ObservedRTORate = float64(rtoResult.TotalRTOs) / float64(rtoResult.TotalOrders)
-	}
-	result.EstimatedRTOCostINR = float64(rtoResult.TotalRTOs) * 280.0 // ₹280 avg fwd+rev shipping
+	result.ObservedRTORate = analytics.ComputeRTORate(rtoResult.TotalRTOs, rtoResult.TotalOrders) / 100
+	result.EstimatedRTOCostINR = analytics.ComputeEstimatedRTOCostINR(rtoResult.TotalRTOs)
 
 	// --- Buyer intent distribution from OrderAudit.PredictedRiskScore ---
 	type scoreRow struct {
@@ -407,9 +402,9 @@ func (h *AnalyticsHandler) computeOwnStoreAnalytics(ctx context.Context, merchan
 		Scan(&scoreRows)
 
 	buckets := domain.BuyerIntentBuckets{}
-	var scoreSum float64
-	for _, r := range scoreRows {
-		scoreSum += r.PredictedRiskScore
+	btiScores := make([]int, len(scoreRows))
+	for i, r := range scoreRows {
+		btiScores[i] = int(r.PredictedRiskScore)
 		switch {
 		case r.PredictedRiskScore < 40:
 			buckets.HighRiskCount++
@@ -423,24 +418,21 @@ func (h *AnalyticsHandler) computeOwnStoreAnalytics(ctx context.Context, merchan
 	}
 	total := len(scoreRows)
 	if total > 0 {
-		buckets.HighRiskPercent = float64(buckets.HighRiskCount) / float64(total)
-		buckets.ModeratePercent = float64(buckets.ModerateCount) / float64(total)
-		buckets.TrustedPercent = float64(buckets.TrustedCount) / float64(total)
-		buckets.VIPPercent = float64(buckets.VIPCount) / float64(total)
-		result.AvgKaughtmanScore = scoreSum / float64(total)
+		pcts := analytics.ComputeIntentDistributionPcts(analytics.IntentDistribution{
+			VIPCount:      buckets.VIPCount,
+			TrustedCount:  buckets.TrustedCount,
+			ModerateCount: buckets.ModerateCount,
+			HighRiskCount: buckets.HighRiskCount,
+			TotalCount:    total,
+		})
+		buckets.HighRiskPercent = pcts["high_risk_percent"]
+		buckets.ModeratePercent = pcts["moderate_percent"]
+		buckets.TrustedPercent = pcts["trusted_percent"]
+		buckets.VIPPercent = pcts["vip_percent"]
+		result.AvgBuyerTrustIndex = analytics.ComputeAvgBuyerTrustIndex(btiScores)
 	}
 	result.BuyerIntentDistribution = buckets
-
-	switch {
-	case result.AvgKaughtmanScore >= 85:
-		result.KaughtmanScoreLabel = "VIP"
-	case result.AvgKaughtmanScore >= 70:
-		result.KaughtmanScoreLabel = "Trusted"
-	case result.AvgKaughtmanScore >= 40:
-		result.KaughtmanScoreLabel = "Moderate"
-	default:
-		result.KaughtmanScoreLabel = "High Risk"
-	}
+	result.BuyerTrustIndexLabel = analytics.BTILabel(result.AvgBuyerTrustIndex)
 
 	// --- Own store refund/complaint rate from CustomerFeedback ---
 	var feedbackCount int64
@@ -630,18 +622,14 @@ func (h *AnalyticsHandler) computeCrossNetworkAnalytics(ctx context.Context, mer
 		FROM billable_events WHERE merchant_id = ? AND order_value_paise > 0
 	`, merchantID).Scan(&merchantAvgCart)
 
-	var belowCount int64
+	var networkCarts []float64
 	h.pg.WithContext(ctx).Raw(`
-		SELECT COUNT(*) FROM (
-			SELECT phone_hash, AVG(order_value_paise) AS avg_cart
-			FROM billable_events WHERE order_value_paise > 0
-			GROUP BY phone_hash
-		) sub WHERE avg_cart < ?
-	`, merchantAvgCart*100).Scan(&belowCount)
-
-	if totalNetworkBuyers > 0 {
-		result.MerchantSpendingPercentile = (float64(belowCount) / float64(totalNetworkBuyers)) * 100.0
-	}
+		SELECT AVG(order_value_paise) / 100.0 AS avg_cart
+		FROM billable_events
+		WHERE order_value_paise > 0
+		GROUP BY phone_hash
+	`).Scan(&networkCarts)
+	result.MerchantSpendingPercentile = float64(analytics.ComputeSpendingPercentile(merchantAvgCart, networkCarts))
 
 	// --- Buyer overlap: how many of this merchant's phone hashes appear in other merchants' BillableEvents ---
 	type overlapRow struct {
@@ -715,21 +703,21 @@ func (h *AnalyticsHandler) computeCrossNetworkAnalytics(ctx context.Context, mer
 			SELECT DISTINCT phone_hash FROM billable_events WHERE merchant_id = ?
 		) be ON tp.phone_hash = be.phone_hash
 	`, merchantID).Scan(&merchantRTORow)
-	result.MerchantRTOVsNetworkDelta = merchantRTORow.RTORate - result.NetworkRTORateAggregate
+	result.MerchantRTOVsNetworkDelta = analytics.ComputeRTONetworkDelta(merchantRTORow.RTORate, result.NetworkRTORateAggregate) / 100
 
-	// Kaughtman scores
+	// Buyer Trust Index scores
 	var networkAvgScore struct{ Avg float64 }
 	h.pg.WithContext(ctx).Raw(`
 		SELECT AVG(predicted_risk_score) AS avg FROM order_audits WHERE predicted_risk_score > 0
 	`).Scan(&networkAvgScore)
-	result.NetworkAvgKaughtmanScore = networkAvgScore.Avg
+	result.NetworkAvgBuyerTrustIndex = networkAvgScore.Avg
 
 	var merchantAvgScore struct{ Avg float64 }
 	h.pg.WithContext(ctx).Raw(`
 		SELECT AVG(predicted_risk_score) AS avg FROM order_audits
 		WHERE merchant_id = ? AND predicted_risk_score > 0
 	`, merchantID).Scan(&merchantAvgScore)
-	result.MerchantAvgKaughtmanScore = merchantAvgScore.Avg
+	result.MerchantAvgBuyerTrustIndex = merchantAvgScore.Avg
 
 	return result, nil
 }

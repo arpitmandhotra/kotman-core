@@ -136,8 +136,8 @@ func TestEvaluateRisk_Integration(t *testing.T) {
 		if resp.Action != "ALLOW_COD" {
 			t.Errorf("expected ALLOW_COD, got %s", resp.Action)
 		}
-		if resp.Score != 85 {
-			t.Errorf("expected score 85, got %d", resp.Score)
+		if resp.BuyerTrustIndex != 85 {
+			t.Errorf("expected buyer trust index 85, got %d", resp.BuyerTrustIndex)
 		}
 	})
 
@@ -159,8 +159,8 @@ func TestEvaluateRisk_Integration(t *testing.T) {
 		if resp.Action != "HIDE_COD" {
 			t.Errorf("expected HIDE_COD, got %s", resp.Action)
 		}
-		if resp.Score != 5 {
-			t.Errorf("expected score 5, got %d", resp.Score)
+		if resp.BuyerTrustIndex != 5 {
+			t.Errorf("expected buyer trust index 5, got %d", resp.BuyerTrustIndex)
 		}
 
 		// Verify cache warming
@@ -201,8 +201,8 @@ func TestEvaluateRisk_Integration(t *testing.T) {
 		if resp.Action != "HIDE_COD" {
 			t.Errorf("expected velocity block HIDE_COD, got %s", resp.Action)
 		}
-		if resp.Score != 10 {
-			t.Errorf("expected velocity score 10, got %d", resp.Score)
+		if resp.BuyerTrustIndex != 10 {
+			t.Errorf("expected velocity buyer trust index 10, got %d", resp.BuyerTrustIndex)
 		}
 	})
 

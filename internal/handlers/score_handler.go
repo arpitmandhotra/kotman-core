@@ -52,6 +52,17 @@ func (h *ScoreHandler) GetMerchantScores(c *fiber.Ctx) error {
 		scoreMap[scores[i].ScoreType] = &scores[i]
 	}
 
+	getLatestInsight := func(st domain.ScoreType) string {
+		var ins domain.AIScoreInsight
+		if err := h.pg.WithContext(ctx).
+			Where("merchant_id = ? AND score_type = ?", merchantID, st).
+			Order("generated_at DESC").
+			First(&ins).Error; err == nil {
+			return ins.Insight
+		}
+		return ""
+	}
+
 	// Response structure
 	response := fiber.Map{}
 
@@ -61,6 +72,7 @@ func (h *ScoreHandler) GetMerchantScores(c *fiber.Ctx) error {
 			"score":       ops.Score,
 			"computed_at": ops.ComputedAt,
 			"valid_until": ops.ValidUntil,
+			"ai_insight":  getLatestInsight(domain.ScoreOperations),
 		}
 	} else {
 		response["operations"] = fiber.Map{"status": "building..."}
@@ -72,6 +84,7 @@ func (h *ScoreHandler) GetMerchantScores(c *fiber.Ctx) error {
 			"score":       rto.Score,
 			"computed_at": rto.ComputedAt,
 			"valid_until": rto.ValidUntil,
+			"ai_insight":  getLatestInsight(domain.ScoreRTOEfficiency),
 		}
 	} else {
 		response["rto_efficiency"] = fiber.Map{"status": "building..."}
@@ -90,6 +103,7 @@ func (h *ScoreHandler) GetMerchantScores(c *fiber.Ctx) error {
 				"score":       bq.Score,
 				"computed_at": bq.ComputedAt,
 				"valid_until": bq.ValidUntil,
+				"ai_insight":  getLatestInsight(domain.ScoreBuyerQuality),
 			}
 		} else {
 			response["buyer_quality"] = fiber.Map{"status": "building..."}

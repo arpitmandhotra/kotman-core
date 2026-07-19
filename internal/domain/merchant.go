@@ -335,8 +335,8 @@ type OwnStoreAnalytics struct {
     // Kaughtman Score average for this merchant's buyers
     // Kaughtman Score = average PredictedRiskScore across all OrderAudit rows for this merchant
     // Labelled as: 0-39 = "High Risk", 40-69 = "Moderate", 70-84 = "Trusted", 85-100 = "VIP"
-    AvgKaughtmanScore            float64 `json:"avg_kaughtman_score"`
-    KaughtmanScoreLabel          string  `json:"kaughtman_score_label"` // "High Risk" | "Moderate" | "Trusted" | "VIP"
+    AvgBuyerTrustIndex           float64 `json:"avg_buyer_trust_index"`
+    BuyerTrustIndexLabel         string  `json:"buyer_trust_index_label"` // "High Risk" | "Moderate" | "Trusted" | "VIP"
 
     // Refund/complaint rate on own store
     // Derived from CustomerFeedback rows where merchant_id = this merchant
@@ -403,9 +403,9 @@ type CrossNetworkAnalytics struct {
     // For this merchant specifically vs network
     MerchantRTOVsNetworkDelta     float64 `json:"merchant_rto_vs_network_delta"` // positive = merchant worse than network
 
-    // Kaughtman Score comparison
-    MerchantAvgKaughtmanScore        float64 `json:"merchant_avg_kaughtman_score"`    // same as OwnStore.AvgKaughtmanScore
-    NetworkAvgKaughtmanScore         float64 `json:"network_avg_kaughtman_score"`     // across all merchants
+    // Buyer Trust Index comparison
+    MerchantAvgBuyerTrustIndex       float64 `json:"merchant_avg_buyer_trust_index"`    // same as OwnStore.AvgBuyerTrustIndex
+    NetworkAvgBuyerTrustIndex        float64 `json:"network_avg_buyer_trust_index"`     // across all merchants
 
     // TEASER ONLY (available in free tier, full data requires module)
     // Teaser = aggregate figures above without SpendBandDistribution detail or overlap breakdowns

@@ -182,6 +182,11 @@ func main() {
 		log.Fatalf("❌ Failed to migrate ScoreComponent: %v", err)
 	}
 
+	log.Println("📦 Syncing domain.AIScoreInsight schema...")
+	if err := db.AutoMigrate(&domain.AIScoreInsight{}); err != nil {
+		log.Fatalf("❌ Failed to migrate AIScoreInsight: %v", err)
+	}
+
 	log.Println("📦 Syncing domain.BuyerProfile schema (including LTV fields)...")
 	if err := db.AutoMigrate(&domain.BuyerProfile{}); err != nil {
 		log.Fatalf("❌ Failed to migrate BuyerProfile: %v", err)

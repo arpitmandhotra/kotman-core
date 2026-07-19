@@ -49,3 +49,13 @@ type GatedScoreEnvelope struct {
 	TierRequired string `json:"tier_required"`
 	Metric       string `json:"metric"`
 }
+
+type AIScoreInsight struct {
+	gorm.Model
+	MerchantID  string    `gorm:"index;not null"`
+	ScoreType   ScoreType `gorm:"not null"`
+	ScoreValue  int       `gorm:"not null"`           // the score value at time of generation
+	Insight     string    `gorm:"type:text;not null"` // AI-generated 2-sentence recommendation
+	GeneratedAt time.Time `gorm:"not null"`
+	ModelUsed   string    `gorm:"not null;default:'claude-sonnet-4-6'"`
+}

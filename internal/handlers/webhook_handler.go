@@ -759,7 +759,7 @@ func (h *WebhookHandler) HandleShopifyOrderCreation(c *fiber.Ctx) error {
 	}
 
 	return c.JSON(fiber.Map{
-		"action": resp.Action,
-		"score":  resp.Score,
+		"action":            resp.Action,
+		"buyer_trust_index": resp.BuyerTrustIndex,
 	})
 }

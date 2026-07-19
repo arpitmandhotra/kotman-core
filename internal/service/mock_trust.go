@@ -17,9 +17,9 @@ func NewMockTrustService() *MockTrustService {
 func (s *MockTrustService) EvaluateRisk(ctx context.Context, phoneHash string, ipAddress string, merchantID string, cartValue float64) (domain.TrustResponse, error) {
 	// The mock brain always returns a safe score of 85
 	return domain.TrustResponse{
-		PhoneHash: phoneHash,
-		Score:     85,
-		Action:    "ALLOW_COD",
+		PhoneHash:       phoneHash,
+		BuyerTrustIndex: 85,
+		Action:          "ALLOW_COD",
 	}, nil
 }
 
