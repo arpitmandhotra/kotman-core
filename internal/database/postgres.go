@@ -68,6 +68,18 @@ func NewPostgresClient() *gorm.DB {
 		&domain.PincodeReference{},
 		&domain.ShopifyBulkOperation{},
 		&domain.WaitlistEntry{},
+		// ==========================================
+		// INVENTORY INTELLIGENCE TABLES
+		// ==========================================
+		&domain.InventorySnapshot{},
+		&domain.InventoryProduct{},
+		&domain.InventorySupplier{},
+		&domain.SalesEvent{},
+		&domain.FestivalCalendar{},
+		// ==========================================
+		// EARLY ACCESS SYSTEM
+		// ==========================================
+		&domain.EarlyAccessRequest{},
 	)
 	if err != nil {
 		log.Fatalf("Failed to auto-migrate database schema: %v", err)
@@ -142,9 +154,51 @@ func NewPostgresClient() *gorm.DB {
 		CREATE INDEX IF NOT EXISTS idx_billable_event_invoice_lookup 
 		ON billable_events (merchant_id, created_at, invoice_id) 
 		WHERE invoice_id = '' OR invoice_id IS NULL;
+		-- INVENTORY INTELLIGENCE: unique constraint backing ON CONFLICT upsert
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_inv_snapshot_merchant_product_date
+		ON inventory_snapshots (merchant_id, product_id, snapshot_date);
+		-- INVENTORY INTELLIGENCE: supporting query indexes
+		CREATE INDEX IF NOT EXISTS idx_inv_snapshot_merchant_sku
+		ON inventory_snapshots (merchant_id, sku, snapshot_date DESC);
+		CREATE INDEX IF NOT EXISTS idx_inv_snapshot_merchant_date
+		ON inventory_snapshots (merchant_id, snapshot_date DESC);
+		CREATE INDEX IF NOT EXISTS idx_sales_event_merchant_dates
+		ON sales_events (merchant_id, start_date, end_date);
+		CREATE INDEX IF NOT EXISTS idx_festival_calendar_dates
+		ON festival_calendars (start_date, end_date);
+		-- EARLY ACCESS: fast count-by-feature for the live counter endpoint
+		CREATE INDEX IF NOT EXISTS idx_early_access_feature_status
+		ON early_access_requests (feature_name, status, requested_at DESC);
 	`
 	if err := db.Exec(uniqueIndexSQL).Error; err != nil {
 		log.Fatalf("Failed to migrate unique and composite indexes: %v", err)
+	}
+
+	// ==========================================
+	// EARLY ACCESS: feature_name CHECK constraint
+	// ==========================================
+	// Stored as VARCHAR(100), not a Postgres ENUM, so new features only require
+	// updating this constraint list + the Go domain map — no column type migration.
+	// DROP + ADD pattern keeps the constraint in sync on every deploy (idempotent).
+	earlyAccessConstraintSQL := `
+		ALTER TABLE early_access_requests
+			DROP CONSTRAINT IF EXISTS chk_early_access_feature_name;
+		ALTER TABLE early_access_requests
+			ADD CONSTRAINT chk_early_access_feature_name CHECK (feature_name IN (
+				'inventory_forecasting',
+				'demand_planning',
+				'logistics_optimisation',
+				'inventory_health',
+				'supplier_management',
+				'buyer_intelligence',
+				'network_intel',
+				'model_performance',
+				'growth_ads',
+				'crm_enrichment'
+			));
+	`
+	if err := db.Exec(earlyAccessConstraintSQL).Error; err != nil {
+		log.Fatalf("Failed to migrate early_access_requests CHECK constraint: %v", err)
 	}
 
 	alterOrderSQL := `
