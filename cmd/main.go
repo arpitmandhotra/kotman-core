@@ -14,6 +14,7 @@ import (
 	"github.com/arpitmandhotra/api-integrator/internal/database"
 	"github.com/arpitmandhotra/api-integrator/internal/handlers"
 	"github.com/arpitmandhotra/api-integrator/internal/integrations/backfill"
+	"github.com/arpitmandhotra/api-integrator/internal/inventory"
 	"github.com/arpitmandhotra/api-integrator/internal/logger"
 	"github.com/arpitmandhotra/api-integrator/internal/middleware"
 	"github.com/arpitmandhotra/api-integrator/internal/service"
@@ -66,6 +67,8 @@ func main() {
 	billingHandler := handlers.NewBillingHandler(postgresClient, redisClient)
 	scoreHandler := handlers.NewScoreHandler(postgresClient)
 	pincodeHandler := handlers.NewPincodeHandler(postgresClient, redisClient)
+	inventoryWebhookHandler := handlers.NewInventoryWebhookHandler(postgresClient)
+	earlyAccessHandler := handlers.NewEarlyAccessHandler(postgresClient)
 
 	// ==========================================
 	// 3. THE ROUTER & MIDDLEWARE LAYER
@@ -175,7 +178,20 @@ func main() {
 		// M20 FIX: Warn operators that Magento webhooks will silently 404.
 		slog.Warn("Magento webhook route INACTIVE — MAGENTO_WEBHOOK_SECRET not set; all Magento orders will be silently dropped")
 	}
-	// DOOR A: Private Enterprise
+	// Inventory intelligence webhook routes
+	// Shopify: inventory_levels/update and inventory_items/update share one endpoint;
+	// the topic is disambiguated inside the handler via X-Shopify-Topic.
+	webhookGroup.Post("/shopify/inventory", middleware.RequireShopifyHMAC(shopifySecret), inventoryWebhookHandler.HandleShopifyInventory)
+
+	if wooSecret != "" {
+		webhookGroup.Post("/woocommerce/inventory", middleware.RequireWooCommerceHMAC(wooSecret), inventoryWebhookHandler.HandleWooCommerceInventory)
+		slog.Info("WooCommerce inventory webhook route active")
+	}
+
+	if magentoSecret != "" {
+		webhookGroup.Post("/magento/inventory", middleware.RequireMagentoAuth(magentoSecret), inventoryWebhookHandler.HandleMagentoInventory)
+		slog.Info("Magento inventory webhook route active")
+	}
 	app.Post("/v1/trust",
 		middleware.RequireAPIKey(postgresClient, redisClient),
 		middleware.RequireRateLimit(redisClient),
@@ -198,6 +214,13 @@ func main() {
 	)
 
 	app.Post("/v1/waitlist/join", ipLimiter, onboardingHandler.JoinWaitlist)
+
+	// ==========================================
+	// EARLY ACCESS REQUEST SYSTEM
+	// ==========================================
+	// Public endpoints — no auth, rate-limited by IP
+	app.Post("/v1/early-access", ipLimiter, earlyAccessHandler.SubmitRequest)
+	app.Get("/v1/early-access/count", ipLimiter, earlyAccessHandler.GetCount)
 
 	// Score API Endpoints
 	app.Get("/v1/merchants/:id/scores",
@@ -266,6 +289,7 @@ func main() {
 	adminGroup.Post("/backfill/retrigger-all", adminHandler.RetriggerAllBackfills)
 	adminGroup.Get("/merchants/sync-quality", adminHandler.GetMerchantSyncQuality)
 	adminGroup.Get("/waitlist", onboardingHandler.GetWaitlist)
+	adminGroup.Get("/early-access", earlyAccessHandler.AdminListRequests)
 
 	// ==========================================
 	// 5. HEALTH CHECK & START UP
@@ -302,6 +326,19 @@ func main() {
 
 	// Start Shopify bulk operation poller
 	go backfill.StartPoller(pollerCtx, postgresClient, redisClient)
+
+	// ==========================================
+	// INVENTORY INTELLIGENCE STARTUP
+	// ==========================================
+	// Seed the Indian D2C festival calendar for the current and next two years.
+	// This is idempotent — safe to run on every deploy.
+	go func() {
+		seeder := inventory.NewFestivalSeeder(postgresClient)
+		seeder.SeedUpcomingYears(context.Background())
+	}()
+
+	// Start the daily midnight IST inventory snapshot cron job.
+	go inventory.StartDailyCron(pollerCtx, postgresClient)
 
 	// Run server in a goroutine so it doesn't block the signal listener
 	go func() {
